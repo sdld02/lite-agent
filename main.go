@@ -1,0 +1,271 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/user"
+	"runtime"
+	"strings"
+
+	"lite-agent/agent"
+	"lite-agent/llm"
+	"lite-agent/tools"
+)
+
+// 支持的 LLM 提供者预设配置
+var llmProviders = map[string]struct {
+	baseURL string
+	model   string
+}{
+	"openai":   {"https://api.openai.com/v1", "gpt-4o"},
+	"deepseek": {"https://api.deepseek.com/v1", "deepseek-chat"},
+	"moonshot": {"https://api.moonshot.cn/v1", "moonshot-v1-8k"},
+	"zhipu":    {"https://open.bigmodel.cn/api/paas/v4", "glm-4"},
+	"qwen":     {"https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo"},
+	"ollama":   {"http://localhost:11434/v1", "llama2"},
+}
+
+// getSystemInfo 动态获取系统信息
+func getSystemInfo() map[string]interface{} {
+	info := map[string]interface{}{
+		"os":      runtime.GOOS,
+		"arch":    runtime.GOARCH,
+		"cpus":    runtime.NumCPU(),
+		"version": runtime.Version(),
+	}
+
+	// 获取当前用户
+	if currentUser, err := user.Current(); err == nil {
+		info["user"] = currentUser.Username
+		info["homeDir"] = currentUser.HomeDir
+	}
+
+	// 获取工作目录
+	if workDir, err := os.Getwd(); err == nil {
+		info["workDir"] = workDir
+	}
+
+	// 获取主机名
+	if hostname, err := os.Hostname(); err == nil {
+		info["hostname"] = hostname
+	}
+
+	return info
+}
+
+// buildDefaultSystemPrompt 构建默认系统提示词（包含动态系统信息）
+func buildDefaultSystemPrompt() string {
+	sysInfo := getSystemInfo()
+
+	return fmt.Sprintf(`你是一个智能助手，运行在以下系统环境中：
+
+## 系统信息
+- 操作系统: %s
+- CPU 架构: %s
+- CPU 核心数: %d
+- Go 版本: %s
+- 主机名: %s
+- 当前用户: %s
+- 用户主目录: %s
+- 当前工作目录: %s
+
+## 可用工具
+你有以下工具可以使用：
+- calculator: 执行数学计算
+- system_info: 获取系统信息
+- shell: 执行系统命令
+
+## 行为准则
+1. 当用户请求需要使用工具时，请调用相应的工具来完成任务
+2. 如果用户的问题不需要使用工具，请直接回答
+3. 执行 shell 命令时，注意当前操作系统是 %s，使用适合该系统的命令
+4. 请用中文回复用户`,
+		sysInfo["os"],
+		sysInfo["arch"],
+		sysInfo["cpus"],
+		sysInfo["version"],
+		sysInfo["hostname"],
+		sysInfo["user"],
+		sysInfo["homeDir"],
+		sysInfo["workDir"],
+		sysInfo["os"],
+	)
+}
+
+func main() {
+	// 命令行参数
+	provider := flag.String("provider", "", "LLM 提供者: openai, deepseek, moonshot, zhipu, qwen, ollama")
+	apiKey := flag.String("key", "", "API Key (也可通过环境变量设置)")
+	baseURL := flag.String("url", "", "API Base URL (可选，默认使用 provider 预设)")
+	model := flag.String("model", "", "模型名称 (可选，默认使用 provider 预设)")
+	systemPrompt := flag.String("prompt", "", "系统提示词 (可选，默认使用内置提示词)")
+	flag.Parse()
+
+	// 确定 API Key
+	finalAPIKey := *apiKey
+	if finalAPIKey == "" {
+		finalAPIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	// 确定 Base URL 和 Model
+	var finalBaseURL, finalModel string
+	if *provider != "" {
+		// 使用预设提供者
+		if p, ok := llmProviders[*provider]; ok {
+			finalBaseURL = p.baseURL
+			finalModel = p.model
+		} else {
+			fmt.Printf("未知的提供者: %s\n支持的提供者: ", *provider)
+			for name := range llmProviders {
+				fmt.Printf("%s ", name)
+			}
+			fmt.Println()
+			os.Exit(1)
+		}
+	}
+
+	// 命令行参数覆盖预设
+	if *baseURL != "" {
+		finalBaseURL = *baseURL
+	}
+	if *model != "" {
+		finalModel = *model
+	}
+
+	// 环境变量覆盖
+	if envURL := os.Getenv("OPENAI_BASE_URL"); envURL != "" {
+		finalBaseURL = envURL
+	}
+	if envModel := os.Getenv("OPENAI_MODEL"); envModel != "" {
+		finalModel = envModel
+	}
+
+	// 默认值
+	if finalBaseURL == "" {
+		finalBaseURL = "https://api.openai.com/v1"
+	}
+	if finalModel == "" {
+		finalModel = "gpt-4o"
+	}
+
+	// 验证 API Key
+	if finalAPIKey == "" {
+		fmt.Println("=================================")
+		fmt.Println("     Go AI Agent 学习框架")
+		fmt.Println("=================================")
+		fmt.Println()
+		fmt.Println("❌ 请设置 API Key")
+		fmt.Println()
+		fmt.Println("方式一：环境变量")
+		fmt.Println("  Windows PowerShell:")
+		fmt.Println("    $env:OPENAI_API_KEY='your-api-key'")
+		fmt.Println()
+		fmt.Println("  Linux/Mac:")
+		fmt.Println("    export OPENAI_API_KEY='your-api-key'")
+		fmt.Println()
+		fmt.Println("方式二：命令行参数")
+		fmt.Println("  go run main.go -provider=deepseek -key=your-api-key")
+		fmt.Println()
+		fmt.Println("支持的提供者:")
+		fmt.Println("  - openai    : GPT-4, GPT-4o")
+		fmt.Println("  - deepseek  : DeepSeek Chat/Coder")
+		fmt.Println("  - moonshot  : Kimi (月之暗面)")
+		fmt.Println("  - zhipu     : GLM-4 (智谱)")
+		fmt.Println("  - qwen      : 通义千问")
+		fmt.Println("  - ollama    : 本地模型")
+		fmt.Println("=================================")
+		os.Exit(1)
+	}
+
+	// 创建 LLM 提供者
+	providerCfg := llm.NewOpenAIProvider(llm.OpenAIConfig{
+		APIKey:  finalAPIKey,
+		BaseURL: finalBaseURL,
+		Model:   finalModel,
+	})
+
+	// 创建 Agent
+	ag := agent.NewAgent(providerCfg)
+	ag.SetMaxSteps(50)
+
+	// 设置系统提示词 - 始终使用动态构建的提示词，并允许自定义提示词作为补充
+	finalPrompt := buildDefaultSystemPrompt()
+	if *systemPrompt != "" {
+		// 如果提供了自定义提示词，则将其附加到默认提示词后面
+		finalPrompt = *systemPrompt + "\n\n" + finalPrompt
+	}
+	ag.SetSystemPrompt(finalPrompt)
+
+	// 注册内置工具
+	ag.AddTool(tools.NewCalculatorTool())
+	ag.AddTool(tools.NewSystemInfoTool())
+	ag.AddTool(tools.NewShellToolUnsafe())
+
+	// 显示启动信息
+	fmt.Println("=================================")
+	fmt.Println("     Go AI Agent 学习框架")
+	fmt.Println("=================================")
+	fmt.Println()
+	fmt.Printf("📡 API: %s\n", finalBaseURL)
+	fmt.Printf("🤖 Model: %s\n", finalModel)
+	fmt.Printf("📝 System Prompt: %s\n", truncatePrompt(finalPrompt, 50))
+	fmt.Println()
+	fmt.Println("已加载工具:")
+	fmt.Println("  - calculator   : 数学计算")
+	fmt.Println("  - system_info  : 系统信息")
+	fmt.Println("  - shell        : Shell 命令执行")
+	fmt.Println()
+	fmt.Println("输入 'quit' 或 'exit' 退出")
+	fmt.Println("输入 'prompt' 查看完整系统提示词")
+	fmt.Println("=================================")
+	fmt.Println()
+
+	// 交互式对话
+	reader := bufio.NewReader(os.Stdin)
+	ctx := context.Background()
+
+	for {
+		fmt.Print("👤 You: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		if input == "" {
+			continue
+		}
+
+		if input == "quit" || input == "exit" {
+			fmt.Println("👋 再见!")
+			break
+		}
+
+		if input == "prompt" {
+			fmt.Println("📝 当前系统提示词:")
+			fmt.Println("---")
+			fmt.Println(finalPrompt)
+			fmt.Println("---")
+			continue
+		}
+
+		// 运行 Agent
+		fmt.Print("🤖 Agent: ")
+		response, err := ag.Run(ctx, input)
+		if err != nil {
+			fmt.Printf("错误: %v\n", err)
+			continue
+		}
+
+		fmt.Println(response)
+		fmt.Println()
+	}
+}
+
+// truncatePrompt 截断提示词用于显示
+func truncatePrompt(prompt string, maxLen int) string {
+	if len(prompt) <= maxLen {
+		return prompt
+	}
+	return prompt[:maxLen] + "..."
+}
