@@ -13,6 +13,8 @@ import (
 	"lite-agent/agent"
 	"lite-agent/llm"
 	"lite-agent/tools"
+
+	"github.com/charmbracelet/glamour"
 )
 
 // 支持的 LLM 提供者预设配置
@@ -256,8 +258,11 @@ func main() {
 			fmt.Printf("错误: %v\n", err)
 			continue
 		}
-
-		fmt.Println(response)
+		renderer, _ := glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+		)
+		out, err := renderer.Render(response)
+		fmt.Println(out)
 		fmt.Println()
 	}
 }

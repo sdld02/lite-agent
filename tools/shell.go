@@ -101,8 +101,12 @@ func (t *ShellTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "要执行的 shell 命令，如: ls -la, dir, git status",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "命令的意图，如: 获取文件列表, 查看目录, 获取 Git 状态",
+			},
 		},
-		"required": []string{"command"},
+		"required": []string{"command", "intent"},
 	}
 }
 
@@ -110,6 +114,10 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (s
 	command, ok := args["command"].(string)
 	if !ok {
 		return "", fmt.Errorf("command 参数必须是字符串")
+	}
+	_, ok = args["intent"].(string)
+	if !ok {
+		return "", fmt.Errorf("intent 参数必须是字符串")
 	}
 
 	// 安全检查：验证命令是否在白名单中

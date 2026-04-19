@@ -166,7 +166,13 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 
 		// 打印工具调用信息
 		fmt.Printf("\n🔧 调用工具: %s\n", tc.Function.Name)
-		fmt.Printf("   参数: %s\n", string(tc.Function.Arguments))
+		if "shell" == tc.Function.Name {
+			fmt.Printf("   意图: %s\n", args["intent"])
+			fmt.Printf("   命令: %s\n", args["command"])
+		}else{
+			fmt.Printf("   参数: %s\n", string(tc.Function.Arguments))
+		}
+
 
 		// 执行工具
 		result, err := tool.Execute(ctx, args)
