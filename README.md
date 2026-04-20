@@ -25,10 +25,11 @@ lite-agent/
 
 ```go
 type Agent struct {
-    provider LLMProvider    // LLM 提供者（OpenAI、DeepSeek 等）
-    tools    map[string]Tool // 可用工具集合
-    memory   []Message       // 对话记忆
-    maxSteps int             // 最大执行步数
+    provider     LLMProvider    // LLM 提供者（OpenAI、DeepSeek 等）
+    tools        map[string]Tool // 可用工具集合
+    memory       []Message       // 对话记忆
+    systemPrompt string          // 系统提示词
+    maxSteps     int             // 最大执行步数
 }
 ```
 
@@ -43,7 +44,20 @@ type Tool interface {
 }
 ```
 
-### 3. 执行流程
+### 3. 流式输出接口 (`agent/agent.go`)
+
+```go
+type StreamCallback func(chunk string)
+
+type StreamProvider interface {
+    LLMProvider
+    ChatStream(ctx, messages, tools, callback) (*Message, error)
+}
+```
+
+Agent 同时支持非流式 (`Run`) 和流式 (`RunStream`) 两种执行模式。流式模式下通过回调实时返回文本片段，输出完成后用 glamour 渲染 Markdown 替换原文。
+
+### 4. 执行流程
 
 ```
 用户输入 → LLM 推理 → 判断是否需要工具调用
@@ -123,6 +137,9 @@ go run main.go -provider=ollama -key=ollama
 
 # 自定义 URL 和模型
 go run main.go -url=https://api.deepseek.com/v1 -model=deepseek-chat -key=your-api-key
+
+# 关闭流式输出（默认开启）
+go run main.go -provider=deepseek -key=your-api-key -stream=false
 ```
 
 ### 示例对话
@@ -134,6 +151,7 @@ go run main.go -url=https://api.deepseek.com/v1 -model=deepseek-chat -key=your-a
 
 📡 API: https://api.deepseek.com/v1
 🤖 Model: deepseek-chat
+⚡ 流式输出: 已启用
 
 已加载工具:
   - calculator   : 数学计算
@@ -257,12 +275,13 @@ ag.AddTool(shellTool)
 1. **工具调用流程**：LLM 如何决定调用哪个工具，如何传递参数
 2. **多轮对话**：Agent 如何保持上下文记忆
 3. **循环执行**：工具执行结果如何反馈给 LLM 继续推理
-4. **错误处理**：工具执行失败时的处理策略
+4. **流式输出**：SSE 协议解析、流式 tool_calls 拼接、终端实时渲染与替换
+5. **错误处理**：工具执行失败时的处理策略
 
 ## 扩展方向
 
 - [ ] 添加向量数据库支持（RAG）
-- [ ] 添加流式输出支持
+- [x] 添加流式输出支持
 - [ ] 添加多 Agent 协作
 - [ ] 添加 Web 搜索工具
 - [ ] 添加代码执行沙箱

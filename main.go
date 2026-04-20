@@ -104,6 +104,7 @@ func main() {
 	baseURL := flag.String("url", "", "API Base URL (可选，默认使用 provider 预设)")
 	model := flag.String("model", "", "模型名称 (可选，默认使用 provider 预设)")
 	systemPrompt := flag.String("prompt", "", "系统提示词 (可选，默认使用内置提示词)")
+	stream := flag.Bool("stream", true, "启用流式输出模式（默认开启，-stream=false 关闭）")
 	flag.Parse()
 
 	// 确定 API Key
@@ -214,6 +215,9 @@ func main() {
 	fmt.Printf("📡 API: %s\n", finalBaseURL)
 	fmt.Printf("🤖 Model: %s\n", finalModel)
 	fmt.Printf("📝 System Prompt: %s\n", truncatePrompt(finalPrompt, 50))
+	if *stream {
+		fmt.Println("⚡ 流式输出: 已启用")
+	}
 	fmt.Println()
 	fmt.Println("已加载工具:")
 	fmt.Println("  - calculator   : 数学计算")
@@ -253,16 +257,46 @@ func main() {
 
 		// 运行 Agent
 		fmt.Print("🤖 Agent: ")
-		response, err := ag.Run(ctx, input)
-		if err != nil {
-			fmt.Printf("错误: %v\n", err)
-			continue
+		if *stream {
+			// 流式模式：实时逐字输出，同时统计行数用于后续清除
+			lineCount := 1 // "🤖 Agent: " 占第一行
+			response, err := ag.RunStream(ctx, input, func(chunk string) {
+				fmt.Print(chunk)
+				lineCount += strings.Count(chunk, "\n")
+			})
+			if err != nil {
+				fmt.Printf("\n错误: %v\n", err)
+				continue
+			}
+			// 用 ANSI 转义序列清除流式输出的原文，再用 glamour 渲染替换
+			renderer, _ := glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+			)
+			if out, renderErr := renderer.Render(response); renderErr == nil {
+				// 回到列首，上移到流式输出的起始行，清除到屏幕末尾
+				fmt.Print("\r")
+				if lineCount > 1 {
+					fmt.Printf("\033[%dA", lineCount-1)
+				}
+				fmt.Print("\033[J")
+				fmt.Print("🤖 Agent: ")
+				fmt.Println(out)
+			} else {
+				fmt.Println()
+			}
+		} else {
+			// 非流式模式：等待完整响应后输出
+			response, err := ag.Run(ctx, input)
+			if err != nil {
+				fmt.Printf("错误: %v\n", err)
+				continue
+			}
+			renderer, _ := glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+			)
+			out, _ := renderer.Render(response)
+			fmt.Println(out)
 		}
-		renderer, _ := glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
-		)
-		out, err := renderer.Render(response)
-		fmt.Println(out)
 		fmt.Println()
 	}
 }

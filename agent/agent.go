@@ -47,6 +47,16 @@ type LLMProvider interface {
 	Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Message, error)
 }
 
+// StreamCallback 流式输出回调，每收到一个文本片段时调用
+type StreamCallback func(chunk string)
+
+// StreamProvider 支持流式输出的 LLM 提供者接口
+type StreamProvider interface {
+	LLMProvider
+	// ChatStream 流式发送消息，通过回调实时返回文本片段，最终返回完整的 Message（含 tool_calls）
+	ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, callback StreamCallback) (*Message, error)
+}
+
 // ToolDefinition 工具定义（用于发送给 LLM）
 type ToolDefinition struct {
 	Type     string             `json:"type"`
@@ -192,6 +202,41 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 	}
 
 	return results, nil
+}
+
+// RunStream 以流式模式运行 Agent，实时输出文本片段
+func (a *Agent) RunStream(ctx context.Context, userInput string, callback StreamCallback) (string, error) {
+	sp, ok := a.provider.(StreamProvider)
+	if !ok {
+		return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
+	}
+
+	messages := a.buildMessages(userInput)
+
+	for i := 0; i < a.maxSteps; i++ {
+		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), callback)
+		if err != nil {
+			return "", fmt.Errorf("LLM 流式调用失败: %w", err)
+		}
+
+		a.memory = append(a.memory, *response)
+		messages = append(messages, *response)
+
+		if len(response.ToolCalls) > 0 {
+			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
+			if err != nil {
+				return "", err
+			}
+
+			a.memory = append(a.memory, toolResults...)
+			messages = append(messages, toolResults...)
+			continue
+		}
+
+		return response.Content, nil
+	}
+
+	return "", fmt.Errorf("达到最大执行步数 %d，可能存在循环", a.maxSteps)
 }
 
 // buildMessages 构建消息列表（包含系统提示词和历史记忆）
