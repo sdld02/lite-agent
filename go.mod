@@ -2,7 +2,10 @@ module lite-agent
 
 go 1.24.0
 
-require github.com/charmbracelet/glamour v1.0.0
+require (
+	github.com/charmbracelet/glamour v1.0.0
+	github.com/sergi/go-diff v1.4.0
+)
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect

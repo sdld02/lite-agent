@@ -50,6 +50,10 @@ type LLMProvider interface {
 // StreamCallback 流式输出回调，每收到一个文本片段时调用
 type StreamCallback func(chunk string)
 
+// StreamFlushCallback 流式渲染刷新回调，在 tool call 执行前调用
+// content 为当前轮次累积的文本内容，调用方可据此做清屏+渲染
+type StreamFlushCallback func(content string)
+
 // StreamProvider 支持流式输出的 LLM 提供者接口
 type StreamProvider interface {
 	LLMProvider
@@ -205,7 +209,9 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 }
 
 // RunStream 以流式模式运行 Agent，实时输出文本片段
-func (a *Agent) RunStream(ctx context.Context, userInput string, callback StreamCallback) (string, error) {
+// onChunk: 每收到一个文本片段时调用
+// onFlush: 在执行 tool call 前调用，传入当前轮次累积的文本，供调用方清屏+渲染
+func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamCallback, onFlush StreamFlushCallback) (string, error) {
 	sp, ok := a.provider.(StreamProvider)
 	if !ok {
 		return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
@@ -214,7 +220,7 @@ func (a *Agent) RunStream(ctx context.Context, userInput string, callback Stream
 	messages := a.buildMessages(userInput)
 
 	for i := 0; i < a.maxSteps; i++ {
-		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), callback)
+		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), onChunk)
 		if err != nil {
 			return "", fmt.Errorf("LLM 流式调用失败: %w", err)
 		}
@@ -223,6 +229,11 @@ func (a *Agent) RunStream(ctx context.Context, userInput string, callback Stream
 		messages = append(messages, *response)
 
 		if len(response.ToolCalls) > 0 {
+			// 执行工具前，先通知调用方渲染当前已输出的内容
+			if onFlush != nil {
+				onFlush(response.Content)
+			}
+
 			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
 			if err != nil {
 				return "", err

@@ -79,6 +79,10 @@ func buildDefaultSystemPrompt() string {
 - calculator: 执行数学计算
 - system_info: 获取系统信息
 - shell: 执行系统命令
+- file_edit: 编辑文件内容（精确字符串替换）
+- file_write: 写入文件内容（创建或覆盖文件）
+- file_diff: 比较两个文件的差异
+- file_read: 读取文件内容
 
 ## 行为准则
 1. 当用户请求需要使用工具时，请调用相应的工具来完成任务
@@ -206,6 +210,10 @@ func main() {
 	ag.AddTool(tools.NewCalculatorTool())
 	ag.AddTool(tools.NewSystemInfoTool())
 	ag.AddTool(tools.NewShellToolUnsafe())
+	ag.AddTool(tools.NewFileEditTool())
+	ag.AddTool(tools.NewFileWriteTool())
+	ag.AddTool(tools.NewFileDiffTool())
+	ag.AddTool(tools.NewFileReadTool())
 
 	// 显示启动信息
 	fmt.Println("=================================")
@@ -223,6 +231,10 @@ func main() {
 	fmt.Println("  - calculator   : 数学计算")
 	fmt.Println("  - system_info  : 系统信息")
 	fmt.Println("  - shell        : Shell 命令执行")
+	fmt.Println("  - file_edit    : 文件编辑")
+	fmt.Println("  - file_write   : 文件写入")
+	fmt.Println("  - file_diff    : 文件比较")
+	fmt.Println("  - file_read    : 文件读取")
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
@@ -260,30 +272,49 @@ func main() {
 		if *stream {
 			// 流式模式：实时逐字输出，同时统计行数用于后续清除
 			lineCount := 1 // "🤖 Agent: " 占第一行
-			response, err := ag.RunStream(ctx, input, func(chunk string) {
-				fmt.Print(chunk)
-				lineCount += strings.Count(chunk, "\n")
-			})
+			isFirstSegment := true
+
+			renderer, _ := glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+			)
+
+			// clearAndRender 清除当前流式原文并用 glamour 渲染替换
+			clearAndRender := func(content string) {
+				if content == "" {
+					return
+				}
+				if rendered, err := renderer.Render(content); err == nil {
+					fmt.Print("\r")
+					if lineCount > 1 {
+						fmt.Printf("\033[%dA", lineCount-1)
+					}
+					fmt.Print("\033[J")
+					if isFirstSegment {
+						fmt.Print("🤖 Agent: ")
+						isFirstSegment = false
+					}
+					fmt.Print(rendered)
+				}
+				// 重置行计数，为下一轮流式或后续工具输出做准备
+				lineCount = 0
+			}
+
+			response, err := ag.RunStream(ctx, input,
+				// onChunk: 实时输出文本片段
+				func(chunk string) {
+					fmt.Print(chunk)
+					lineCount += strings.Count(chunk, "\n")
+				},
+				// onFlush: tool call 执行前，清屏+渲染当前累积内容
+				clearAndRender,
+			)
 			if err != nil {
 				fmt.Printf("\n错误: %v\n", err)
 				continue
 			}
-			// 用 ANSI 转义序列清除流式输出的原文，再用 glamour 渲染替换
-			renderer, _ := glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-			)
-			if out, renderErr := renderer.Render(response); renderErr == nil {
-				// 回到列首，上移到流式输出的起始行，清除到屏幕末尾
-				fmt.Print("\r")
-				if lineCount > 1 {
-					fmt.Printf("\033[%dA", lineCount-1)
-				}
-				fmt.Print("\033[J")
-				fmt.Print("🤖 Agent: ")
-				fmt.Println(out)
-			} else {
-				fmt.Println()
-			}
+			// 最终结果也做一次清屏+渲染
+			clearAndRender(response)
+			fmt.Println()
 		} else {
 			// 非流式模式：等待完整响应后输出
 			response, err := ag.Run(ctx, input)
