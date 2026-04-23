@@ -6,12 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"lite-agent/agent"
 	"lite-agent/llm"
+	"lite-agent/session"
 	"lite-agent/tools"
 
 	"github.com/charmbracelet/glamour"
@@ -111,6 +115,8 @@ func main() {
 	model := flag.String("model", "", "模型名称 (可选，默认使用 provider 预设)")
 	systemPrompt := flag.String("prompt", "", "系统提示词 (可选，默认使用内置提示词)")
 	stream := flag.Bool("stream", true, "启用流式输出模式（默认开启，-stream=false 关闭）")
+	newSession := flag.Bool("new", false, "强制开始新会话")
+	sessionID := flag.String("session", "", "指定加载某个 session ID")
 	flag.Parse()
 
 	// 确定 API Key
@@ -219,6 +225,67 @@ func main() {
 	ag.AddTool(tools.NewCodeProbeTool())
 	ag.AddTool(tools.NewCodeStatsTool())
 
+	// 初始化会话存储
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("警告: 无法获取用户主目录: %v\n", err)
+		homeDir = "."
+	}
+	store, err := session.NewStore(filepath.Join(homeDir, ".lite-agent", "sessions"))
+	if err != nil {
+		fmt.Printf("警告: 初始化会话存储失败: %v\n", err)
+	}
+
+	// 会话恢复逻辑
+	var currentSession *session.Session
+	if store != nil {
+		switch {
+		case *newSession:
+			currentSession = session.NewSession()
+		case *sessionID != "":
+			loaded, err := store.Load(*sessionID)
+			if err != nil {
+				fmt.Printf("❌ 加载会话 %s 失败: %v\n", *sessionID, err)
+				os.Exit(1)
+			}
+			currentSession = loaded
+			ag.SetMemory(currentSession.Messages)
+			fmt.Printf("📂 已恢复会话 %s（%d 条消息）\n", currentSession.ID, currentSession.MessageCount)
+		default:
+			latest, err := store.Latest()
+			if err == nil && latest != nil {
+				currentSession = latest
+				ag.SetMemory(currentSession.Messages)
+				fmt.Printf("📂 已恢复会话 %s（%d 条消息）\n", currentSession.ID, currentSession.MessageCount)
+			} else {
+				currentSession = session.NewSession()
+			}
+		}
+	} else {
+		currentSession = session.NewSession()
+	}
+
+	// saveSession 保存当前会话（忽略错误，仅打印警告）
+	saveSession := func() {
+		if store == nil {
+			return
+		}
+		currentSession.SetMessages(ag.GetMemory())
+		if err := store.Save(currentSession); err != nil {
+			fmt.Printf("警告: 保存会话失败: %v\n", err)
+		}
+	}
+
+	// 注册信号处理，Ctrl+C 时尽力保存
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n👋 收到退出信号，正在保存会话...")
+		saveSession()
+		os.Exit(0)
+	}()
+
 	// 显示启动信息
 	fmt.Println("=================================")
 	fmt.Println("     Go AI Agent 学习框架")
@@ -244,6 +311,11 @@ func main() {
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
+	fmt.Println("输入 'sessions' 查看历史会话")
+	fmt.Println("输入 'new' 开始新会话")
+	fmt.Println("输入 'load <id>' 加载历史会话")
+	fmt.Println("输入 'delete <id>' 删除历史会话")
+	fmt.Printf("💾 当前会话: %s\n", currentSession.ID)
 	fmt.Println("=================================")
 	fmt.Println()
 
@@ -260,16 +332,97 @@ func main() {
 			continue
 		}
 
-		if input == "quit" || input == "exit" {
+		// 命令路由
+		switch {
+		case input == "quit" || input == "exit":
+			saveSession()
 			fmt.Println("👋 再见!")
-			break
-		}
+			return
 
-		if input == "prompt" {
+		case input == "prompt":
 			fmt.Println("📝 当前系统提示词:")
 			fmt.Println("---")
 			fmt.Println(finalPrompt)
 			fmt.Println("---")
+			continue
+
+		case input == "sessions":
+			if store == nil {
+				fmt.Println("会话存储未初始化")
+				continue
+			}
+			metas, err := store.List()
+			if err != nil {
+				fmt.Printf("读取会话列表失败: %v\n", err)
+				continue
+			}
+			if len(metas) == 0 {
+				fmt.Println("暂无历史会话")
+				continue
+			}
+			fmt.Println("📋 历史会话：")
+			fmt.Printf("  %-20s %-20s %-6s %s\n", "ID", "时间", "消息数", "预览")
+			for _, m := range metas {
+				marker := "  "
+				if m.ID == currentSession.ID {
+					marker = "* "
+				}
+				// 从 RFC3339 中提取可读时间
+				displayTime := m.UpdatedAt
+				if len(displayTime) >= 16 {
+					displayTime = displayTime[:16]
+				}
+				fmt.Printf("%s%-20s %-20s %-6d %s\n", marker, m.ID, displayTime, m.MessageCount, m.Preview)
+			}
+			continue
+
+		case input == "new":
+			saveSession()
+			currentSession = session.NewSession()
+			ag.SetMemory(nil)
+			fmt.Printf("✨ 已创建新会话: %s\n", currentSession.ID)
+			continue
+
+		case strings.HasPrefix(input, "load "):
+			targetID := strings.TrimSpace(strings.TrimPrefix(input, "load "))
+			if targetID == "" {
+				fmt.Println("用法: load <session-id>")
+				continue
+			}
+			if store == nil {
+				fmt.Println("会话存储未初始化")
+				continue
+			}
+			loaded, err := store.Load(targetID)
+			if err != nil {
+				fmt.Printf("加载会话失败: %v\n", err)
+				continue
+			}
+			saveSession()
+			currentSession = loaded
+			ag.SetMemory(currentSession.Messages)
+			fmt.Printf("📂 已加载会话 %s（%d 条消息）\n", currentSession.ID, currentSession.MessageCount)
+			continue
+
+		case strings.HasPrefix(input, "delete "):
+			targetID := strings.TrimSpace(strings.TrimPrefix(input, "delete "))
+			if targetID == "" {
+				fmt.Println("用法: delete <session-id>")
+				continue
+			}
+			if store == nil {
+				fmt.Println("会话存储未初始化")
+				continue
+			}
+			if targetID == currentSession.ID {
+				fmt.Println("不能删除当前正在使用的会话")
+				continue
+			}
+			if err := store.Delete(targetID); err != nil {
+				fmt.Printf("删除会话失败: %v\n", err)
+				continue
+			}
+			fmt.Printf("🗑️  已删除会话: %s\n", targetID)
 			continue
 		}
 
@@ -316,24 +469,28 @@ func main() {
 			)
 			if err != nil {
 				fmt.Printf("\n错误: %v\n", err)
-				continue
+			} else {
+				// 最终结果也做一次清屏+渲染
+				clearAndRender(response)
+				fmt.Println()
 			}
-			// 最终结果也做一次清屏+渲染
-			clearAndRender(response)
-			fmt.Println()
 		} else {
 			// 非流式模式：等待完整响应后输出
 			response, err := ag.Run(ctx, input)
 			if err != nil {
 				fmt.Printf("错误: %v\n", err)
-				continue
+			} else {
+				renderer, _ := glamour.NewTermRenderer(
+					glamour.WithAutoStyle(),
+				)
+				out, _ := renderer.Render(response)
+				fmt.Println(out)
 			}
-			renderer, _ := glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-			)
-			out, _ := renderer.Render(response)
-			fmt.Println(out)
 		}
+
+		// 每轮对话后自动保存
+		saveSession()
+
 		fmt.Println()
 	}
 }

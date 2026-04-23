@@ -108,10 +108,26 @@ func (a *Agent) SetMaxSteps(steps int) {
 	a.maxSteps = steps
 }
 
+// GetMemory 返回当前 memory 的副本
+func (a *Agent) GetMemory() []Message {
+	copied := make([]Message, len(a.memory))
+	copy(copied, a.memory)
+	return copied
+}
+
+// SetMemory 恢复历史 memory（用于加载持久化的会话）
+func (a *Agent) SetMemory(messages []Message) {
+	a.memory = messages
+}
+
 // Run 运行 Agent
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
+	// 先将用户消息加入 memory（确保持久化时包含用户消息）
+	if userInput != "" {
+		a.memory = append(a.memory, Message{Role: "user", Content: userInput})
+	}
 	// 构建消息列表（包含系统提示词）
-	messages := a.buildMessages(userInput)
+	messages := a.buildMessages("")
 
 	// 循环执行
 	for i := 0; i < a.maxSteps; i++ {
@@ -217,7 +233,11 @@ func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamC
 		return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
 	}
 
-	messages := a.buildMessages(userInput)
+	// 先将用户消息加入 memory（确保持久化时包含用户消息）
+	if userInput != "" {
+		a.memory = append(a.memory, Message{Role: "user", Content: userInput})
+	}
+	messages := a.buildMessages("")
 
 	for i := 0; i < a.maxSteps; i++ {
 		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), onChunk)
