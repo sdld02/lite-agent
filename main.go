@@ -83,7 +83,7 @@ func buildDefaultSystemPrompt() string {
 - file_write: 写入文件内容（创建或覆盖文件）
 - file_diff: 比较两个文件的差异
 - file_read: 读取文件内容
-- code_probe: 探查项目结构（支持 summary/structure/flat/grouped 模式）
+- code_probe: 探查项目结构（支持 summary/structure/flat/grouped/tree 模式）
 - code_stats: 统计代码行数（支持按语言分组统计）
 
 ## 行为准则

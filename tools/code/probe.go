@@ -2,8 +2,10 @@ package code
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -11,10 +13,27 @@ type OutputMode string
 
 const (
 	ModeSummary   OutputMode = "summary"   // 仅统计信息
-	ModeStructure OutputMode = "structure" // 目录树结构（可限制数量）
+	ModeStructure OutputMode = "structure" // JSON 目录树结构（可限制数量）
 	ModeFlat      OutputMode = "flat"      // 扁平列表（适合 grep）
 	ModeGrouped   OutputMode = "grouped"   // 按扩展名分组
+	ModeTree      OutputMode = "tree"      // 文本树形可视化（类似 tree 命令）
 )
+
+// TreeConfig 文本树形可视化配置
+type TreeConfig struct {
+	RootPath   string
+	MaxDepth   int
+	ShowFiles  bool
+	IgnoreDirs []string
+}
+
+// TextTree 文本树形输出结果
+type TextTree struct {
+	Tree     string `json:"tree"`
+	Root     string `json:"root"`
+	TotalDirs int   `json:"totalDirs"`
+	TotalFiles int  `json:"totalFiles"`
+}
 
 type ProjectStats struct {
 	TotalDirs   int            `json:"totalDirs"`
@@ -36,7 +55,11 @@ type FileNode struct {
 }
 
 // 1. 摘要模式 - 最小 token 消耗
-func GetProjectSummary(rootPath string, maxDepth int) ([]byte, error) {
+func GetProjectSummary(rootPath string, maxDepth int, ignoreDirs []string) ([]byte, error) {
+	if ignoreDirs == nil {
+		ignoreDirs = []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	}
+
 	stats := &ProjectStats{
 		FileTypes: make(map[string]int),
 	}
@@ -44,6 +67,11 @@ func GetProjectSummary(rootPath string, maxDepth int) ([]byte, error) {
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || path == rootPath {
 			return err
+		}
+		
+		// 跳过被忽略的目录
+		if d.IsDir() && contains(ignoreDirs, d.Name()) {
+			return filepath.SkipDir
 		}
 		
 		relPath, _ := filepath.Rel(rootPath, path)
@@ -97,7 +125,11 @@ type TruncatedTree struct {
 	HiddenCount int       `json:"hiddenCount"`   // 隐藏的项目数
 }
 
-func GetSmartTree(rootPath string, maxDepth int, maxItemsPerDir int) ([]byte, error) {
+func GetSmartTree(rootPath string, maxDepth int, maxItemsPerDir int, ignoreDirs []string) ([]byte, error) {
+	if ignoreDirs == nil {
+		ignoreDirs = []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	}
+
 	absPath, _ := filepath.Abs(rootPath)
 	root := &FileNode{
 		Name:  filepath.Base(absPath),
@@ -106,7 +138,7 @@ func GetSmartTree(rootPath string, maxDepth int, maxItemsPerDir int) ([]byte, er
 	}
 	
 	totalDirs, totalFiles := 0, 0
-	buildSmartTree(absPath, root, 0, maxDepth, maxItemsPerDir, &totalDirs, &totalFiles)
+	buildSmartTree(absPath, root, 0, maxDepth, maxItemsPerDir, ignoreDirs, &totalDirs, &totalFiles)
 	
 	result := &TruncatedTree{
 		Root:       root.Name,
@@ -120,20 +152,29 @@ func GetSmartTree(rootPath string, maxDepth int, maxItemsPerDir int) ([]byte, er
 	return json.MarshalIndent(result, "", "  ")
 }
 
-func buildSmartTree(path string, node *FileNode, depth, maxDepth, maxItems int, totalDirs, totalFiles *int) {
+func buildSmartTree(path string, node *FileNode, depth, maxDepth, maxItems int, ignoreDirs []string, totalDirs, totalFiles *int) {
 	if depth >= maxDepth {
 		return
 	}
 	
 	entries, _ := os.ReadDir(path)
 	
+	// 过滤忽略目录
+	filtered := []fs.DirEntry{}
+	for _, entry := range entries {
+		if entry.IsDir() && contains(ignoreDirs, entry.Name()) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	
 	// 限制每层显示数量
-	if len(entries) > maxItems {
-		entries = entries[:maxItems]
+	if len(filtered) > maxItems {
+		filtered = filtered[:maxItems]
 		node.Truncated = true
 	}
 	
-	for _, entry := range entries {
+	for _, entry := range filtered {
 		if entry.IsDir() {
 			*totalDirs++
 			child := &FileNode{
@@ -141,7 +182,7 @@ func buildSmartTree(path string, node *FileNode, depth, maxDepth, maxItems int, 
 				Path:  filepath.Join(node.Path, entry.Name()),
 				IsDir: true,
 			}
-			buildSmartTree(filepath.Join(path, entry.Name()), child, depth+1, maxDepth, maxItems, totalDirs, totalFiles)
+			buildSmartTree(filepath.Join(path, entry.Name()), child, depth+1, maxDepth, maxItems, ignoreDirs, totalDirs, totalFiles)
 			node.Children = append(node.Children, child)
 		} else {
 			*totalFiles++
@@ -155,13 +196,22 @@ func buildSmartTree(path string, node *FileNode, depth, maxDepth, maxItems int, 
 }
 
 // 3. 扁平模式 - 推送完整路径列表
-func GetFlatList(rootPath string, maxDepth int, maxItems int) ([]byte, error) {
+func GetFlatList(rootPath string, maxDepth int, maxItems int, ignoreDirs []string) ([]byte, error) {
+	if ignoreDirs == nil {
+		ignoreDirs = []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	}
+
 	var files []string
 	var dirs []string
 	
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		
+		// 跳过被忽略的目录
+		if d.IsDir() && contains(ignoreDirs, d.Name()) {
+			return filepath.SkipDir
 		}
 		
 		relPath, _ := filepath.Rel(rootPath, path)
@@ -216,17 +266,29 @@ type GroupedStructure struct {
 	Summary map[string]int     `json:"summary"` // 扩展名 -> 数量
 }
 
-func GetGroupedByType(rootPath string, maxDepth int) ([]byte, error) {
+func GetGroupedByType(rootPath string, maxDepth int, ignoreDirs []string) ([]byte, error) {
+	if ignoreDirs == nil {
+		ignoreDirs = []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	}
+
 	grouped := &GroupedStructure{
 		ByType:  make(map[string][]string),
 		Summary: make(map[string]int),
 	}
 	
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
 		}
-		
+
+		// 跳过被忽略的目录
+		if d.IsDir() {
+			if contains(ignoreDirs, d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		relPath, _ := filepath.Rel(rootPath, path)
 		depth := strings.Count(relPath, string(filepath.Separator))
 		
@@ -284,4 +346,153 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// 6. 文本树形可视化模式 - 类似 tree 命令的输出
+// GetTextTree 生成可读的文本树形目录结构
+func GetTextTree(rootPath string, maxDepth int, showFiles bool, ignoreDirs []string) ([]byte, error) {
+	if ignoreDirs == nil {
+		ignoreDirs = []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	}
+
+	cfg := TreeConfig{
+		RootPath:   rootPath,
+		MaxDepth:   maxDepth,
+		ShowFiles:  showFiles,
+		IgnoreDirs: ignoreDirs,
+	}
+
+	textTree, err := generateTree(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// 同时统计目录和文件数量
+	totalDirs, totalFiles := countTreeItems(cfg)
+
+	result := TextTree{
+		Tree:       textTree,
+		Root:       filepath.Base(rootPath),
+		TotalDirs:  totalDirs,
+		TotalFiles: totalFiles,
+	}
+
+	return json.MarshalIndent(result, "", "  ")
+}
+
+// generateTree 生成文本树形结构
+func generateTree(cfg TreeConfig) (string, error) {
+	var builder strings.Builder
+	absPath, err := filepath.Abs(cfg.RootPath)
+	if err != nil {
+		return "", err
+	}
+
+	builder.WriteString(filepath.Base(absPath) + "/\n")
+	walkDir(absPath, "", 0, cfg, &builder)
+	return builder.String(), nil
+}
+
+// walkDir 递归遍历目录并构建文本树
+func walkDir(path, prefix string, depth int, cfg TreeConfig, builder *strings.Builder) {
+	if depth >= cfg.MaxDepth {
+		return
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return
+	}
+
+	// 过滤忽略目录
+	filtered := []fs.DirEntry{}
+	for _, entry := range entries {
+		if entry.IsDir() && contains(cfg.IgnoreDirs, entry.Name()) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	// 排序保证输出稳定
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Name() < filtered[j].Name()
+	})
+
+	for i, entry := range filtered {
+		isLast := i == len(filtered)-1
+		var connector, childPrefix string
+
+		if isLast {
+			connector = "└── "
+			childPrefix = prefix + "    "
+		} else {
+			connector = "├── "
+			childPrefix = prefix + "│   "
+		}
+
+		if entry.IsDir() {
+			builder.WriteString(prefix + connector + entry.Name() + "/\n")
+			walkDir(filepath.Join(path, entry.Name()), childPrefix, depth+1, cfg, builder)
+		} else if cfg.ShowFiles {
+			builder.WriteString(prefix + connector + entry.Name() + "\n")
+		}
+	}
+}
+
+// contains 检查字符串是否在切片中
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// countTreeItems 统计目录和文件数量（与 walkDir 保持一致的过滤逻辑）
+func countTreeItems(cfg TreeConfig) (int, int) {
+	dirs, files := 0, 0
+	filepath.WalkDir(cfg.RootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path == cfg.RootPath {
+			return nil
+		}
+		relPath, _ := filepath.Rel(cfg.RootPath, path)
+		depth := strings.Count(relPath, string(filepath.Separator))
+		if depth >= cfg.MaxDepth {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// 忽略指定目录（与 walkDir 中的过滤逻辑一致）
+		if d.IsDir() && contains(cfg.IgnoreDirs, d.Name()) {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			dirs++
+		} else {
+			files++
+		}
+		return nil
+	})
+	return dirs, files
+}
+
+// GetProjectStructure 快速获取项目结构（便捷函数）
+func GetProjectStructure(rootPath string, maxDepth int) (string, error) {
+	cfg := TreeConfig{
+		RootPath:   rootPath,
+		MaxDepth:   maxDepth,
+		ShowFiles:  true,
+		IgnoreDirs: []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"},
+	}
+	return generateTree(cfg)
+}
+
+// GetProjectTree 以文本树形式返回项目结构（JSON 封装）
+func GetProjectTree(rootPath string, maxDepth int) ([]byte, error) {
+	return GetTextTree(rootPath, maxDepth, true, nil)
 }

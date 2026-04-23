@@ -21,7 +21,7 @@ func (t *CodeProbeToolWrapper) Name() string {
 }
 
 func (t *CodeProbeToolWrapper) Description() string {
-	return "探查项目结构，支持多种模式：summary（摘要统计）、structure（目录树结构）、flat（扁平文件列表）、grouped（按扩展名分组）。返回 JSON 格式结果。"
+	return "探查项目结构，支持多种模式：summary（摘要统计）、structure（JSON目录树结构）、flat（扁平文件列表）、grouped（按扩展名分组）、tree（文本树形可视化，类似tree命令）。返回 JSON 格式结果。"
 }
 
 func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
@@ -30,7 +30,7 @@ func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"mode": map[string]interface{}{
 				"type":        "string",
-				"description": "探查模式：summary（摘要）、structure（树形结构）、flat（扁平列表）、grouped（按类型分组）",
+				"description": "探查模式：summary（摘要）、structure（树形结构）、flat（扁平列表）、grouped（按类型分组）、tree（文本树形可视化）",
 			},
 			"root_path": map[string]interface{}{
 				"type":        "string",
@@ -67,7 +67,7 @@ func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]inte
 
 	switch mode {
 	case "summary":
-		result, err := code.GetProjectSummary(rootPath, maxDepth)
+		result, err := code.GetProjectSummary(rootPath, maxDepth, nil)
 		if err != nil {
 			return "", fmt.Errorf("获取项目摘要失败: %v", err)
 		}
@@ -78,7 +78,7 @@ func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]inte
 		if v, ok := args["max_items_per_dir"].(float64); ok {
 			maxItemsPerDir = int(v)
 		}
-		result, err := code.GetSmartTree(rootPath, maxDepth, maxItemsPerDir)
+		result, err := code.GetSmartTree(rootPath, maxDepth, maxItemsPerDir, nil)
 		if err != nil {
 			return "", fmt.Errorf("获取目录树失败: %v", err)
 		}
@@ -89,21 +89,28 @@ func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]inte
 		if v, ok := args["max_items"].(float64); ok {
 			maxItems = int(v)
 		}
-		result, err := code.GetFlatList(rootPath, maxDepth, maxItems)
+		result, err := code.GetFlatList(rootPath, maxDepth, maxItems, nil)
 		if err != nil {
 			return "", fmt.Errorf("获取扁平列表失败: %v", err)
 		}
 		return string(result), nil
 
 	case "grouped":
-		result, err := code.GetGroupedByType(rootPath, maxDepth)
+		result, err := code.GetGroupedByType(rootPath, maxDepth, nil)
 		if err != nil {
 			return "", fmt.Errorf("获取类型分组失败: %v", err)
 		}
 		return string(result), nil
 
+	case "tree":
+		result, err := code.GetProjectTree(rootPath, maxDepth)
+		if err != nil {
+			return "", fmt.Errorf("获取文本树形结构失败: %v", err)
+		}
+		return string(result), nil
+
 	default:
-		return "", fmt.Errorf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped", mode)
+		return "", fmt.Errorf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped, tree", mode)
 	}
 }
 
