@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 type OutputMode string
@@ -317,11 +318,103 @@ func GetGroupedByType(rootPath string, maxDepth int, ignoreDirs []string) ([]byt
 	return json.MarshalIndent(grouped, "", "  ")
 }
 
+// RecentFile 最近修改的文件信息
+type RecentFile struct {
+	Path    string `json:"path"`
+	ModTime string `json:"mod_time"`
+	Size    int64  `json:"size"`
+}
+
+// RecentFilesResult 最近修改文件查询结果
+type RecentFilesResult struct {
+	Root       string       `json:"root"`
+	TotalFiles int          `json:"total_files"`
+	Days       int          `json:"days"`
+	CutoffTime string       `json:"cutoff_time"`
+	Files      []RecentFile `json:"files"`
+	Truncated  bool         `json:"truncated,omitempty"`
+}
+
 // 5. 差异模式 - 只显示最近修改的文件
 func GetRecentFiles(rootPath string, maxDepth int, days int) ([]byte, error) {
-	// 实现按修改时间过滤
-	// 返回最近 days 天内修改的文件
-	return nil, nil
+	if days <= 0 {
+		days = 7
+	}
+
+	ignoreDirs := []string{".git", "node_modules", ".idea", ".vscode", "__pycache__"}
+	cutoff := time.Now().AddDate(0, 0, -days)
+
+	var files []RecentFile
+
+	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path == rootPath {
+			return nil
+		}
+
+		// 跳过被忽略的目录
+		if d.IsDir() && contains(ignoreDirs, d.Name()) {
+			return filepath.SkipDir
+		}
+
+		// 深度检查
+		relPath, _ := filepath.Rel(rootPath, path)
+		depth := strings.Count(relPath, string(filepath.Separator))
+		if depth > maxDepth {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// 只关心文件
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+
+		if info.ModTime().After(cutoff) {
+			files = append(files, RecentFile{
+				Path:    relPath,
+				ModTime: info.ModTime().Format(time.RFC3339),
+				Size:    info.Size(),
+			})
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	// 按修改时间降序排列（最新的在前）
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].ModTime > files[j].ModTime
+	})
+
+	// 限制最多返回 200 个，防止输出过大
+	truncated := false
+	if len(files) > 200 {
+		files = files[:200]
+		truncated = true
+	}
+
+	result := RecentFilesResult{
+		Root:       filepath.Base(rootPath),
+		TotalFiles: len(files),
+		Days:       days,
+		CutoffTime: cutoff.Format(time.RFC3339),
+		Files:      files,
+		Truncated:  truncated,
+	}
+
+	return json.MarshalIndent(result, "", "  ")
 }
 
 // Helper: 计算最大深度

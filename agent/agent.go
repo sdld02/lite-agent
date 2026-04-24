@@ -20,8 +20,9 @@ type Tool interface {
 
 // Message 消息结构
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"` // 推理模型的思考过程
 	// 工具调用信息
 	ToolCallID   string                 `json:"tool_call_id,omitempty"`
 	ToolCalls    []ToolCall             `json:"tool_calls,omitempty"`
@@ -59,6 +60,17 @@ type StreamProvider interface {
 	LLMProvider
 	// ChatStream 流式发送消息，通过回调实时返回文本片段，最终返回完整的 Message（含 tool_calls）
 	ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, callback StreamCallback) (*Message, error)
+}
+
+// ReasoningCallback 推理内容流式回调，每收到一个推理片段时调用
+type ReasoningCallback func(chunk string)
+
+// ReasoningStreamProvider 支持推理输出的流式 LLM 提供者接口
+type ReasoningStreamProvider interface {
+	StreamProvider
+	// ChatStreamReasoning 流式发送消息，通过双回调分别返回推理和正文片段
+	ChatStreamReasoning(ctx context.Context, messages []Message, tools []ToolDefinition,
+		onContent StreamCallback, onReasoning ReasoningCallback) (*Message, error)
 }
 
 // ToolDefinition 工具定义（用于发送给 LLM）
@@ -225,12 +237,17 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 }
 
 // RunStream 以流式模式运行 Agent，实时输出文本片段
-// onChunk: 每收到一个文本片段时调用
+// onChunk: 每收到一个正文片段时调用
+// onReasoning: 每收到一个推理片段时调用（推理模型专用，非推理模型可传 nil）
 // onFlush: 在执行 tool call 前调用，传入当前轮次累积的文本，供调用方清屏+渲染
-func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamCallback, onFlush StreamFlushCallback) (string, error) {
-	sp, ok := a.provider.(StreamProvider)
-	if !ok {
-		return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
+func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamCallback, onReasoning ReasoningCallback, onFlush StreamFlushCallback) (string, error) {
+	// 优先尝试 ReasoningStreamProvider（支持推理输出的流式接口）
+	rsp, isReasoning := a.provider.(ReasoningStreamProvider)
+	if !isReasoning {
+		// 回退到普通 StreamProvider
+		if _, ok := a.provider.(StreamProvider); !ok {
+			return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
+		}
 	}
 
 	// 先将用户消息加入 memory（确保持久化时包含用户消息）
@@ -240,7 +257,15 @@ func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamC
 	messages := a.buildMessages("")
 
 	for i := 0; i < a.maxSteps; i++ {
-		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), onChunk)
+		var response *Message
+		var err error
+
+		if isReasoning && onReasoning != nil {
+			response, err = rsp.ChatStreamReasoning(ctx, messages, a.getToolDefinitions(), onChunk, onReasoning)
+		} else {
+			sp := a.provider.(StreamProvider)
+			response, err = sp.ChatStream(ctx, messages, a.getToolDefinitions(), onChunk)
+		}
 		if err != nil {
 			return "", fmt.Errorf("LLM 流式调用失败: %w", err)
 		}

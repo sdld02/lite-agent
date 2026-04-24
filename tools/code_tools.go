@@ -21,7 +21,7 @@ func (t *CodeProbeToolWrapper) Name() string {
 }
 
 func (t *CodeProbeToolWrapper) Description() string {
-	return "探查项目结构，支持多种模式：summary（摘要统计）、structure（JSON目录树结构）、flat（扁平文件列表）、grouped（按扩展名分组）、tree（文本树形可视化，类似tree命令）。返回 JSON 格式结果。"
+	return "探查项目结构，支持多种模式：summary（摘要统计）、structure（JSON目录树结构）、flat（扁平文件列表）、grouped（按扩展名分组）、tree（文本树形可视化，类似tree命令）、recent（最近修改的文件）。返回 JSON 格式结果。"
 }
 
 func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
@@ -30,7 +30,7 @@ func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"mode": map[string]interface{}{
 				"type":        "string",
-				"description": "探查模式：summary（摘要）、structure（树形结构）、flat（扁平列表）、grouped（按类型分组）、tree（文本树形可视化）",
+				"description": "探查模式：summary（摘要）、structure（树形结构）、flat（扁平列表）、grouped（按类型分组）、tree（文本树形可视化）、recent（最近修改的文件）",
 			},
 			"root_path": map[string]interface{}{
 				"type":        "string",
@@ -47,6 +47,10 @@ func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
 			"max_items_per_dir": map[string]interface{}{
 				"type":        "integer",
 				"description": "每层最大显示项数（仅 structure 模式有效），默认为 15",
+			},
+			"days": map[string]interface{}{
+				"type":        "integer",
+				"description": "查询最近多少天的文件（仅 recent 模式有效），默认为 7",
 			},
 		},
 		"required": []string{"mode"},
@@ -109,8 +113,19 @@ func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]inte
 		}
 		return string(result), nil
 
+	case "recent":
+		days := 7
+		if v, ok := args["days"].(float64); ok {
+			days = int(v)
+		}
+		result, err := code.GetRecentFiles(rootPath, maxDepth, days)
+		if err != nil {
+			return "", fmt.Errorf("获取最近修改文件失败: %v", err)
+		}
+		return string(result), nil
+
 	default:
-		return "", fmt.Errorf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped, tree", mode)
+		return "", fmt.Errorf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped, tree, recent", mode)
 	}
 }
 

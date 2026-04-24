@@ -21,13 +21,19 @@ import (
 	"github.com/charmbracelet/glamour"
 )
 
+// ANSI 颜色常量
+const (
+	colorGray  = "\033[90m" // 灰色（亮黑色），用于推理内容展示
+	colorReset = "\033[0m"  // 颜色重置
+)
+
 // 支持的 LLM 提供者预设配置
 var llmProviders = map[string]struct {
 	baseURL string
 	model   string
 }{
 	"openai":   {"https://api.openai.com/v1", "gpt-4o"},
-	"deepseek": {"https://api.deepseek.com/v1", "deepseek-chat"},
+	"deepseek": {"https://api.deepseek.com/v1", "deepseek-v4-pro"},
 	"moonshot": {"https://api.moonshot.cn/v1", "moonshot-v1-8k"},
 	"zhipu":    {"https://open.bigmodel.cn/api/paas/v4", "glm-4"},
 	"qwen":     {"https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo"},
@@ -432,6 +438,7 @@ func main() {
 			// 流式模式：实时逐字输出，同时统计行数用于后续清除
 			lineCount := 1 // "🤖 Agent: " 占第一行
 			isFirstSegment := true
+			reasoningActive := false // 追踪 reasoning/content 阶段切换
 
 			renderer, _ := glamour.NewTermRenderer(
 				glamour.WithAutoStyle(),
@@ -441,6 +448,11 @@ func main() {
 			clearAndRender := func(content string) {
 				if content == "" {
 					return
+				}
+				// 确保颜色已重置
+				if reasoningActive {
+					fmt.Print(colorReset)
+					reasoningActive = false
 				}
 				if rendered, err := renderer.Render(content); err == nil {
 					fmt.Print("\r")
@@ -459,8 +471,23 @@ func main() {
 			}
 
 			response, err := ag.RunStream(ctx, input,
-				// onChunk: 实时输出文本片段
+				// onChunk: 正文片段（正常颜色）
 				func(chunk string) {
+					if reasoningActive {
+						fmt.Print(colorReset)
+						fmt.Println()
+						lineCount++
+						reasoningActive = false
+					}
+					fmt.Print(chunk)
+					lineCount += strings.Count(chunk, "\n")
+				},
+				// onReasoning: 推理片段（灰色输出）
+				func(chunk string) {
+					if !reasoningActive {
+						fmt.Print(colorGray)
+						reasoningActive = true
+					}
 					fmt.Print(chunk)
 					lineCount += strings.Count(chunk, "\n")
 				},
@@ -468,6 +495,9 @@ func main() {
 				clearAndRender,
 			)
 			if err != nil {
+				if reasoningActive {
+					fmt.Print(colorReset)
+				}
 				fmt.Printf("\n错误: %v\n", err)
 			} else {
 				// 最终结果也做一次清屏+渲染
@@ -480,6 +510,13 @@ func main() {
 			if err != nil {
 				fmt.Printf("错误: %v\n", err)
 			} else {
+				// 展示推理内容（如果有）
+				if mem := ag.GetMemory(); len(mem) > 0 {
+					last := mem[len(mem)-1]
+					if last.Role == "assistant" && last.ReasoningContent != "" {
+						fmt.Printf("%s%s%s\n\n", colorGray, last.ReasoningContent, colorReset)
+					}
+				}
 				renderer, _ := glamour.NewTermRenderer(
 					glamour.WithAutoStyle(),
 				)
