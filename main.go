@@ -95,6 +95,7 @@ func buildDefaultSystemPrompt() string {
 - file_read: 读取文件内容
 - code_probe: 探查项目结构（支持 summary/structure/flat/grouped/tree 模式）
 - code_stats: 统计代码行数（支持按语言分组统计）
+- lsp: LSP 代码智能（跳转定义、查找引用、悬停文档、文档符号、工作区符号、调用层次等）
 
 ## 行为准则
 1. 当用户请求需要使用工具时，请调用相应的工具来完成任务
@@ -230,6 +231,7 @@ func main() {
 	ag.AddTool(tools.NewFileReadTool())
 	ag.AddTool(tools.NewCodeProbeTool())
 	ag.AddTool(tools.NewCodeStatsTool())
+	ag.AddTool(tools.NewLSPTool())
 
 	// 初始化会话存储
 	homeDir, err := os.UserHomeDir()
@@ -314,6 +316,7 @@ func main() {
 	fmt.Println("  - file_read    : 文件读取")
 	fmt.Println("  - code_probe   : 项目结构探查")
 	fmt.Println("  - code_stats   : 代码行数统计")
+	fmt.Println("  - lsp          : LSP 代码智能")
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
