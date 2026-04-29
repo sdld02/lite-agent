@@ -96,6 +96,11 @@ func buildDefaultSystemPrompt() string {
 - code_probe: 探查项目结构（支持 summary/structure/flat/grouped/tree 模式）
 - code_stats: 统计代码行数（支持按语言分组统计）
 - lsp: LSP 代码智能（跳转定义、查找引用、悬停文档、文档符号、工作区符号、调用层次等）
+- agent: 启动子Agent处理复杂的多步骤任务（支持 general-purpose、Explore（只读搜索）、Plan（只读规划）等类型）
+- task_create: 创建任务
+- task_update: 更新任务状态
+- task_list: 列出所有任务
+- task_get: 获取任务详情
 
 ## 行为准则
 1. 当用户请求需要使用工具时，请调用相应的工具来完成任务
@@ -209,6 +214,16 @@ func main() {
 		Model:   finalModel,
 	})
 
+	// 获取用户主目录（TaskManager 和 Session 共用）
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("警告: 无法获取用户主目录: %v\n", err)
+		homeDir = "."
+	}
+
+	// 初始化任务管理器（多 Agent 支持的基础设施）
+	tools.InitTaskManager(homeDir)
+
 	// 创建 Agent
 	ag := agent.NewAgent(providerCfg)
 	ag.SetMaxSteps(50)
@@ -221,6 +236,23 @@ func main() {
 	}
 	ag.SetSystemPrompt(finalPrompt)
 
+	// 创建工具注册表（子Agent系统需要）
+	registry := tools.NewToolRegistry()
+	registry.Register("calculator", func() agent.Tool { return tools.NewCalculatorTool() })
+	registry.Register("system_info", func() agent.Tool { return tools.NewSystemInfoTool() })
+	registry.Register("shell", func() agent.Tool { return tools.NewShellToolUnsafe() })
+	registry.Register("file_edit", func() agent.Tool { return tools.NewFileEditTool() })
+	registry.Register("file_write", func() agent.Tool { return tools.NewFileWriteTool() })
+	registry.Register("file_diff", func() agent.Tool { return tools.NewFileDiffTool() })
+	registry.Register("file_read", func() agent.Tool { return tools.NewFileReadTool() })
+	registry.Register("code_probe", func() agent.Tool { return tools.NewCodeProbeTool() })
+	registry.Register("code_stats", func() agent.Tool { return tools.NewCodeStatsTool() })
+	registry.Register("lsp", func() agent.Tool { return tools.NewLSPTool() })
+	registry.Register("task_create", func() agent.Tool { return tools.NewTaskCreateTool() })
+	registry.Register("task_update", func() agent.Tool { return tools.NewTaskUpdateTool() })
+	registry.Register("task_list", func() agent.Tool { return tools.NewTaskListTool() })
+	registry.Register("task_get", func() agent.Tool { return tools.NewTaskGetTool() })
+
 	// 注册内置工具
 	ag.AddTool(tools.NewCalculatorTool())
 	ag.AddTool(tools.NewSystemInfoTool())
@@ -232,13 +264,15 @@ func main() {
 	ag.AddTool(tools.NewCodeProbeTool())
 	ag.AddTool(tools.NewCodeStatsTool())
 	ag.AddTool(tools.NewLSPTool())
+	// Task 任务管理工具（支持多 Agent）
+	ag.AddTool(tools.NewTaskCreateTool())
+	ag.AddTool(tools.NewTaskUpdateTool())
+	ag.AddTool(tools.NewTaskListTool())
+	ag.AddTool(tools.NewTaskGetTool())
+	// Agent 子Agent工具
+	ag.AddTool(tools.NewAgentTool(registry, providerCfg))
 
 	// 初始化会话存储
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Printf("警告: 无法获取用户主目录: %v\n", err)
-		homeDir = "."
-	}
 	store, err := session.NewStore(filepath.Join(homeDir, ".lite-agent", "sessions"))
 	if err != nil {
 		fmt.Printf("警告: 初始化会话存储失败: %v\n", err)
@@ -317,6 +351,8 @@ func main() {
 	fmt.Println("  - code_probe   : 项目结构探查")
 	fmt.Println("  - code_stats   : 代码行数统计")
 	fmt.Println("  - lsp          : LSP 代码智能")
+	fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
+	fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
