@@ -177,11 +177,95 @@ func performEdit(original, oldStr, newStr string, replaceAll bool) (string, stri
     return edited, patch, nil
 }
 
-// 使用 go-diff 生成 unified diff
+// diffToUnified 生成紧凑的 unified diff，仅包含变更行和上下文
+// 类似 git diff 的输出格式，大幅节省 token
 func diffToUnified(a, b string) string {
     dmp := diffmatchpatch.New()
-    diffs := dmp.DiffMain(a, b, false)
-    return dmp.DiffPrettyText(diffs) // 或自定义为 unified format
+
+    // 使用行级 diff（先编码为字符级，再还原）
+    aEnc, bEnc, lineArray := dmp.DiffLinesToChars(a, b)
+    diffs := dmp.DiffMain(aEnc, bEnc, false)
+    diffs = dmp.DiffCharsToLines(diffs, lineArray)
+
+    // 展平为逐行条目
+    type lineEntry struct {
+        op   diffmatchpatch.Operation
+        text string
+    }
+    var entries []lineEntry
+    for _, d := range diffs {
+        raw := d.Text
+        if strings.HasSuffix(raw, "\n") {
+            raw = raw[:len(raw)-1]
+        }
+        for _, line := range strings.Split(raw, "\n") {
+            entries = append(entries, lineEntry{op: d.Type, text: line})
+        }
+    }
+
+    // 检查是否有变更
+    hasChange := false
+    for _, e := range entries {
+        if e.op != diffmatchpatch.DiffEqual {
+            hasChange = true
+            break
+        }
+    }
+    if !hasChange {
+        return ""
+    }
+
+    // 标记需要显示的行（变更行 + 前后各 3 行上下文）
+    const ctx = 3
+    include := make([]bool, len(entries))
+    for i, e := range entries {
+        if e.op != diffmatchpatch.DiffEqual {
+            lo := max(0, i-ctx)
+            hi := min(len(entries)-1, i+ctx)
+            for j := lo; j <= hi; j++ {
+                include[j] = true
+            }
+        }
+    }
+
+    // 按 hunk 输出
+    var sb strings.Builder
+    oldLine, newLine := 1, 1
+    inHunk := false
+
+    for i, e := range entries {
+        if include[i] {
+            if !inHunk {
+                sb.WriteString(fmt.Sprintf("@@ -%d +%d @@\n", oldLine, newLine))
+                inHunk = true
+            }
+            switch e.op {
+            case diffmatchpatch.DiffEqual:
+                sb.WriteString(" " + e.text + "\n")
+                oldLine++
+                newLine++
+            case diffmatchpatch.DiffDelete:
+                sb.WriteString("-" + e.text + "\n")
+                oldLine++
+            case diffmatchpatch.DiffInsert:
+                sb.WriteString("+" + e.text + "\n")
+                newLine++
+            }
+        } else {
+            inHunk = false
+            switch e.op {
+            case diffmatchpatch.DiffEqual:
+                oldLine++
+                newLine++
+            case diffmatchpatch.DiffDelete:
+                oldLine++
+            case diffmatchpatch.DiffInsert:
+                newLine++
+            }
+        }
+    }
+
+    return sb.String()
 }
 
 // 写回文件，尽量保留原始换行风格

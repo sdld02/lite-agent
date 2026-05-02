@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"lite-agent/agent"
 )
 
 // CalculatorTool 计算器工具（纯 Go 实现，不依赖外部命令）
@@ -39,18 +41,26 @@ func (t *CalculatorTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *CalculatorTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *CalculatorTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	expression, ok := args["expression"].(string)
 	if !ok {
-		return "", fmt.Errorf("expression 参数必须是字符串")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("expression 参数必须是字符串"),
+			IsError: true,
+		}, nil
 	}
 
 	result, err := Calculate(expression)
 	if err != nil {
-		return "", fmt.Errorf("计算失败: %v", err)
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(fmt.Errorf("计算失败: %v", err)),
+			IsError: true,
+		}, nil
 	}
 
-	return fmt.Sprintf("计算结果: %s = %v", expression, result), nil
+	return &agent.ToolResult{
+		Content: fmt.Sprintf("计算结果: %s = %v", expression, result),
+	}, nil
 }
 
 // ==================== 纯 Go 表达式求值器 ====================
@@ -354,7 +364,7 @@ func (t *SystemInfoTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *SystemInfoTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *SystemInfoTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	info := map[string]interface{}{
 		"os":      runtime.GOOS,
 		"arch":    runtime.GOARCH,
@@ -363,7 +373,7 @@ func (t *SystemInfoTool) Execute(ctx context.Context, args map[string]interface{
 	}
 
 	result, _ := json.MarshalIndent(info, "", "  ")
-	return string(result), nil
+	return &agent.ToolResult{Content: string(result)}, nil
 }
 
 // TimeTool 时间查询工具
@@ -388,6 +398,8 @@ func (t *TimeTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *TimeTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
-	return fmt.Sprintf("当前时间: %s", runtime.GOOS), nil
+func (t *TimeTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
+	return &agent.ToolResult{
+		Content: fmt.Sprintf("当前时间: %s", runtime.GOOS),
+	}, nil
 }

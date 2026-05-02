@@ -2,9 +2,10 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
 
+	"lite-agent/agent"
 	"lite-agent/tools/file"
 )
 
@@ -22,7 +23,7 @@ func (t *FileEditToolWrapper) Name() string {
 }
 
 func (t *FileEditToolWrapper) Description() string {
-	
+
 	return `\n在文件中执行精确的字符串替换。
 用法：
 - 在进行编辑之前，你必须在本次对话中至少使用一次 file_read 工具读取文件内容。如果在未读取文件的情况下尝试编辑，此工具将会报错。
@@ -59,14 +60,17 @@ func (t *FileEditToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	filePath, _ := args["file_path"].(string)
 	oldString, _ := args["old_string"].(string)
 	newString, _ := args["new_string"].(string)
 	replaceAll, _ := args["replace_all"].(bool)
 
 	if filePath == "" {
-		return "", fmt.Errorf("file_path 参数不能为空")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("file_path 参数不能为空"),
+			IsError: true,
+		}, nil
 	}
 
 	input := file.FileEditInput{
@@ -78,11 +82,30 @@ func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]inter
 
 	output, err := file.FileEditTool(input)
 	if err != nil {
-		return "", err
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(err),
+			IsError: true,
+		}, nil
 	}
 
-	result, _ := json.MarshalIndent(output, "", "  ")
-	return string(result), nil
+	// LLM 看到精简确认文本 + diff 结果
+	var content string
+	if oldString == "" {
+		content = fmt.Sprintf("New file created at: %s", filePath)
+	} else if replaceAll {
+		content = fmt.Sprintf("The file %s has been updated. All occurrences were successfully replaced.", filePath)
+	} else {
+		content = fmt.Sprintf("The file %s has been updated successfully.", filePath)
+	}
+
+	if output.Patch != "" {
+		content += "\n\n" + output.Patch
+	}
+
+	return &agent.ToolResult{
+		Content:  content,
+		RichData: output,
+	}, nil
 }
 
 // ==================== FileWrite 工具包装器 ====================
@@ -124,12 +147,15 @@ func (t *FileWriteToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *FileWriteToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *FileWriteToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	filePath, _ := args["file_path"].(string)
 	content, _ := args["content"].(string)
 
 	if filePath == "" {
-		return "", fmt.Errorf("file_path 参数不能为空")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("file_path 参数不能为空"),
+			IsError: true,
+		}, nil
 	}
 
 	input := file.FileWriteInput{
@@ -139,11 +165,24 @@ func (t *FileWriteToolWrapper) Execute(ctx context.Context, args map[string]inte
 
 	output, err := file.FileWriteTool(input)
 	if err != nil {
-		return "", err
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(err),
+			IsError: true,
+		}, nil
 	}
 
-	result, _ := json.MarshalIndent(output, "", "  ")
-	return string(result), nil
+	// LLM 只看到精简确认文本
+	var resultContent string
+	if output.Type == "create" {
+		resultContent = fmt.Sprintf("File created successfully at: %s", filePath)
+	} else {
+		resultContent = fmt.Sprintf("The file %s has been updated successfully.", filePath)
+	}
+
+	return &agent.ToolResult{
+		Content:  resultContent,
+		RichData: output,
+	}, nil
 }
 
 // ==================== FileDiff 工具包装器 ====================
@@ -184,15 +223,21 @@ func (t *FileDiffToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *FileDiffToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *FileDiffToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	filePathA, _ := args["file_path_a"].(string)
 	filePathB, _ := args["file_path_b"].(string)
 
 	if filePathA == "" {
-		return "", fmt.Errorf("file_path_a 参数不能为空")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("file_path_a 参数不能为空"),
+			IsError: true,
+		}, nil
 	}
 	if filePathB == "" {
-		return "", fmt.Errorf("file_path_b 参数不能为空")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("file_path_b 参数不能为空"),
+			IsError: true,
+		}, nil
 	}
 
 	input := file.FileDiffInput{
@@ -202,11 +247,24 @@ func (t *FileDiffToolWrapper) Execute(ctx context.Context, args map[string]inter
 
 	output, err := file.FileDiffTool(input)
 	if err != nil {
-		return "", err
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(err),
+			IsError: true,
+		}, nil
 	}
 
-	result, _ := json.MarshalIndent(output, "", "  ")
-	return string(result), nil
+	// LLM 需要看到 diff 内容来做代码分析
+	var resultContent string
+	if output.Identical {
+		resultContent = "Files are identical."
+	} else {
+		resultContent = output.Diff
+	}
+
+	return &agent.ToolResult{
+		Content:  resultContent,
+		RichData: output,
+	}, nil
 }
 
 // ==================== FileRead 工具包装器 ====================
@@ -254,13 +312,16 @@ func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	filePath, _ := args["file_path"].(string)
 	maxLines, _ := args["max_lines"].(float64)
 	encoding, _ := args["encoding"].(string)
 
 	if filePath == "" {
-		return "", fmt.Errorf("file_path 参数不能为空")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("file_path 参数不能为空"),
+			IsError: true,
+		}, nil
 	}
 
 	input := file.FileReadInput{
@@ -271,9 +332,46 @@ func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]inter
 
 	output, err := file.FileReadTool(input)
 	if err != nil {
-		return "", err
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(err),
+			IsError: true,
+		}, nil
 	}
 
-	result, _ := json.MarshalIndent(output, "", "  ")
-	return string(result), nil
+	// 文件不存在
+	if !output.Exists {
+		return &agent.ToolResult{
+			Content: agent.FormatToolError(fmt.Errorf("file not found: %s", filePath)),
+			IsError: true,
+		}, nil
+	}
+
+	// 是目录
+	if output.IsDirectory {
+		return &agent.ToolResult{
+			Content: fmt.Sprintf("%s is a directory, not a file.", filePath),
+			IsError: true,
+		}, nil
+	}
+
+	// 成功：返回带行号的纯文本内容（类似 cat -n 格式）
+	content := formatContentWithLineNumbers(output.Content, output.Truncated, output.Lines, output.LinesRead)
+
+	return &agent.ToolResult{
+		Content:  content,
+		RichData: output,
+	}, nil
+}
+
+// formatContentWithLineNumbers 将文件内容格式化为带行号的纯文本
+func formatContentWithLineNumbers(content string, truncated bool, totalLines, linesRead int) string {
+	lines := strings.Split(content, "\n")
+	var sb strings.Builder
+	for i, line := range lines {
+		sb.WriteString(fmt.Sprintf("%4d\t%s\n", i+1, line))
+	}
+	if truncated {
+		sb.WriteString(fmt.Sprintf("\n... (truncated, showing %d/%d lines)\n", linesRead, totalLines))
+	}
+	return sb.String()
 }

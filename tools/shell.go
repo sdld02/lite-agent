@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"lite-agent/agent"
 )
 
 // ShellTool Shell 命令执行工具
@@ -110,14 +112,20 @@ func (t *ShellTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	command, ok := args["command"].(string)
 	if !ok {
-		return "", fmt.Errorf("command 参数必须是字符串")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("command 参数必须是字符串"),
+			IsError: true,
+		}, nil
 	}
 	_, ok = args["intent"].(string)
 	if !ok {
-		return "", fmt.Errorf("intent 参数必须是字符串")
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError("intent 参数必须是字符串"),
+			IsError: true,
+		}, nil
 	}
 
 	// 安全检查：验证命令是否在白名单中
@@ -125,7 +133,10 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (s
 		// 提取命令名（第一个单词）
 		parts := strings.Fields(command)
 		if len(parts) == 0 {
-			return "", fmt.Errorf("命令不能为空")
+			return &agent.ToolResult{
+				Content: agent.FormatValidationError("命令不能为空"),
+				IsError: true,
+			}, nil
 		}
 
 		cmdName := parts[0]
@@ -134,18 +145,18 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			for k := range t.allowedCommands {
 				allowedList = append(allowedList, k)
 			}
-			return "", fmt.Errorf("命令 '%s' 不在允许列表中。允许的命令: %v", cmdName, allowedList)
+			return &agent.ToolResult{
+				Content: agent.FormatToolError(fmt.Errorf("命令 '%s' 不在允许列表中。允许的命令: %v", cmdName, allowedList)),
+				IsError: true,
+			}, nil
 		}
 	}
 
 	// 执行命令
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		// Windows 下使用 UTF-8 编码执行 PowerShell 命令
-		// 设置 OutputEncoding 和 [Console]::OutputEncoding 为 UTF-8
 		psCommand := fmt.Sprintf("chcp 65001 > $null; %s", command)
 		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCommand)
-		// 设置环境变量确保 UTF-8 输出
 		cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
@@ -154,11 +165,13 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (s
 	// 获取输出
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Sprintf("命令执行失败: %v\n输出: %s", err, string(output)), nil
+		return &agent.ToolResult{
+			Content: fmt.Sprintf("命令执行失败: %v\n输出: %s", err, string(output)),
+		}, nil
 	}
 
 	if len(output) == 0 {
-		return "命令执行成功（无输出）", nil
+		return &agent.ToolResult{Content: "命令执行成功（无输出）"}, nil
 	}
 
 	// 限制输出长度
@@ -167,7 +180,7 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (s
 		result = result[:10000] + "\n... (输出被截断)"
 	}
 
-	return result, nil
+	return &agent.ToolResult{Content: result}, nil
 }
 
 // AddAllowedCommand 添加允许的命令到白名单

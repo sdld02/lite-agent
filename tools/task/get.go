@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"lite-agent/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -40,32 +42,32 @@ func (t *TaskGetTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *TaskGetTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *TaskGetTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	taskID, _ := args["taskId"].(string)
 	if taskID == "" {
-		return "", fmt.Errorf("taskId 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("taskId 参数不能为空"), IsError: true}, nil
 	}
 
 	mgr := GetGlobalManager()
 	if mgr == nil {
-		return "任务系统未初始化", nil
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("任务系统未初始化")), IsError: true}, nil
 	}
 
 	taskListID := mgr.GetTaskListID()
 	task, err := mgr.Store.Get(taskListID, taskID)
 	if err != nil {
-		return "", fmt.Errorf("查询任务失败: %w", err)
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("查询任务失败: %w", err)), IsError: true}, nil
 	}
 	if task == nil {
-		return fmt.Sprintf("任务 #%s 不存在", taskID), nil
+		return &agent.ToolResult{Content: fmt.Sprintf("任务 #%s 不存在", taskID), IsError: true}, nil
 	}
 
 	// 过滤已完成的阻塞
 	tasks, _ := mgr.Store.List(taskListID)
 	resolvedIDs := make(map[string]bool)
-	for _, t := range tasks {
-		if t.Status == StatusCompleted {
-			resolvedIDs[t.ID] = true
+	for _, tk := range tasks {
+		if tk.Status == StatusCompleted {
+			resolvedIDs[tk.ID] = true
 		}
 	}
 
@@ -76,7 +78,7 @@ func (t *TaskGetTool) Execute(ctx context.Context, args map[string]interface{}) 
 		}
 	}
 
-	result := map[string]interface{}{
+	richData := map[string]interface{}{
 		"task": map[string]interface{}{
 			"id":          task.ID,
 			"subject":     task.Subject,
@@ -89,6 +91,11 @@ func (t *TaskGetTool) Execute(ctx context.Context, args map[string]interface{}) 
 		},
 	}
 
-	data, _ := json.MarshalIndent(result, "", "  ")
-	return string(data), nil
+	data, _ := json.MarshalIndent(richData, "", "  ")
+
+	// 任务详情本身是 LLM 需要的信息，直接返回
+	return &agent.ToolResult{
+		Content:  string(data),
+		RichData: richData,
+	}, nil
 }

@@ -6,6 +6,23 @@ import (
 	"fmt"
 )
 
+// ToolResult 工具执行结果（分离 LLM 文本与 UI 数据）
+type ToolResult struct {
+	Content  string      // 返回给 LLM 的精简文本
+	RichData interface{} // 可选：完整输出结构体，供 UI/WebSocket 使用（nil 表示无富数据）
+	IsError  bool        // 是否为错误结果
+}
+
+// FormatToolError 格式化工具执行错误（供 LLM 识别）
+func FormatToolError(err error) string {
+	return "<tool_use_error>" + err.Error() + "</tool_use_error>"
+}
+
+// FormatValidationError 格式化输入验证错误
+func FormatValidationError(msg string) string {
+	return "<tool_use_error>InputValidationError: " + msg + "</tool_use_error>"
+}
+
 // Tool 定义 Agent 工具接口
 type Tool interface {
 	// Name 工具名称
@@ -14,8 +31,8 @@ type Tool interface {
 	Description() string
 	// Parameters 工具参数定义 (JSON Schema)
 	Parameters() map[string]interface{}
-	// Execute 执行工具
-	Execute(ctx context.Context, args map[string]interface{}) (string, error)
+	// Execute 执行工具，返回 ToolResult（Content 给 LLM，RichData 给 UI）
+	Execute(ctx context.Context, args map[string]interface{}) (*ToolResult, error)
 }
 
 // Message 消息结构
@@ -86,6 +103,11 @@ type FunctionDefinition struct {
 	Parameters  map[string]interface{} `json:"parameters"`
 }
 
+// ToolCallObserver 工具调用观察者回调
+// 在工具执行前后调用，用于通知外部（如 WebSocket 推送）
+// result == nil 表示工具调用开始，result != nil 表示工具调用结束
+type ToolCallObserver func(toolName string, args map[string]interface{}, result *ToolResult)
+
 // Agent AI Agent 结构
 type Agent struct {
 	provider     LLMProvider
@@ -93,6 +115,7 @@ type Agent struct {
 	memory       []Message
 	systemPrompt string // 系统提示词
 	maxSteps     int    // 最大执行步数，防止无限循环
+	toolObserver ToolCallObserver // 可选：工具调用观察者（默认 nil 时使用 fmt.Printf 输出）
 }
 
 // NewAgent 创建新的 Agent
@@ -118,6 +141,13 @@ func (a *Agent) SetSystemPrompt(prompt string) {
 // SetMaxSteps 设置最大执行步数
 func (a *Agent) SetMaxSteps(steps int) {
 	a.maxSteps = steps
+}
+
+// SetToolObserver 设置工具调用观察者
+// 设置后，工具调用信息会通过回调通知（而非 fmt.Printf 输出）
+// 设置为 nil 可恢复默认的 fmt.Printf 输出行为
+func (a *Agent) SetToolObserver(observer ToolCallObserver) {
+	a.toolObserver = observer
 }
 
 // GetMemory 返回当前 memory 的副本
@@ -197,39 +227,75 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 	for _, tc := range toolCalls {
 		tool, exists := a.tools[tc.Function.Name]
 		if !exists {
-			return nil, fmt.Errorf("未知工具: %s", tc.Function.Name)
+			// 未知工具返回错误结果而非中断整个流程
+			errResult := &ToolResult{
+				Content: FormatToolError(fmt.Errorf("未知工具: %s", tc.Function.Name)),
+				IsError: true,
+			}
+			if a.toolObserver != nil {
+				a.toolObserver(tc.Function.Name, nil, errResult)
+			}
+			results = append(results, Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    errResult.Content,
+			})
+			continue
 		}
 
 		// 解析参数
 		var args map[string]interface{}
 		if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
-			return nil, fmt.Errorf("解析参数失败: %w", err)
+			errResult := &ToolResult{
+				Content: FormatValidationError(fmt.Sprintf("解析参数失败: %v", err)),
+				IsError: true,
+			}
+			if a.toolObserver != nil {
+				a.toolObserver(tc.Function.Name, nil, errResult)
+			}
+			results = append(results, Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    errResult.Content,
+			})
+			continue
 		}
 
-		// 打印工具调用信息
-		fmt.Printf("\n🔧 调用工具: %s\n", tc.Function.Name)
-		if "shell" == tc.Function.Name {
-			fmt.Printf("   意图: %s\n", args["intent"])
-			fmt.Printf("   命令: %s\n", args["command"])
-		}else{
-			fmt.Printf("   参数: %s\n", string(tc.Function.Arguments))
+		fmt.Println(a.toolObserver)
+		// 通知：工具调用开始
+		if a.toolObserver != nil {
+			a.toolObserver(tc.Function.Name, args, nil)
+		} else {
+			fmt.Printf("\n🔧 调用工具: %s\n", tc.Function.Name)
+			if "shell" == tc.Function.Name {
+				fmt.Printf("   意图: %s\n", args["intent"])
+				fmt.Printf("   命令: %s\n", args["command"])
+			} else {
+				fmt.Printf("   参数: %s\n", string(tc.Function.Arguments))
+			}
 		}
-
 
 		// 执行工具
-		result, err := tool.Execute(ctx, args)
+		toolResult, err := tool.Execute(ctx, args)
 		if err != nil {
-			result = fmt.Sprintf("错误: %v", err)
+			toolResult = &ToolResult{
+				Content: FormatToolError(err),
+				IsError: true,
+			}
 		}
 
-		// 打印工具执行结果
-		fmt.Printf("   结果: %s\n\n", result)
+		// 通知：工具执行完毕
+		if a.toolObserver != nil {
+			a.toolObserver(tc.Function.Name, args, toolResult)
+		} else {
+			fmt.Printf("   结果: %s\n\n", toolResult.Content)
+		}
 
 		// 添加工具结果消息
 		results = append(results, Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,
-			Content:    result,
+			Content:    toolResult.Content,
 		})
 	}
 
@@ -274,12 +340,14 @@ func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamC
 		messages = append(messages, *response)
 
 		if len(response.ToolCalls) > 0 {
-			// 执行工具前，先通知调用方渲染当前已输出的内容
+			// 先执行工具调用（打印工具信息），再渲染 LLM 文本
+			// 这样用户看到的是：工具调用 → 工具结果 → LLM 回复
+			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
+
+			// 工具执行完毕后再渲染第1轮 LLM 文本（如"让我查看项目结构"）
 			if onFlush != nil {
 				onFlush(response.Content)
 			}
-
-			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
 			if err != nil {
 				return "", err
 			}

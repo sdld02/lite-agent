@@ -3,6 +3,9 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+
+	"lite-agent/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,16 +42,16 @@ func (t *TaskListTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *TaskListTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *TaskListTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	mgr := GetGlobalManager()
 	if mgr == nil {
-		return "任务系统未初始化", nil
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("任务系统未初始化")), IsError: true}, nil
 	}
 
 	taskListID := mgr.GetTaskListID()
 	tasks, err := mgr.Store.List(taskListID)
 	if err != nil {
-		return "", err
+		return &agent.ToolResult{Content: agent.FormatToolError(err), IsError: true}, nil
 	}
 
 	// 过滤 _internal metadata 的任务
@@ -97,7 +100,12 @@ func (t *TaskListTool) Execute(ctx context.Context, args map[string]interface{})
 		})
 	}
 
-	result := map[string]interface{}{"tasks": summaries}
-	data, _ := json.MarshalIndent(result, "", "  ")
-	return string(data), nil
+	richData := map[string]interface{}{"tasks": summaries}
+	data, _ := json.MarshalIndent(richData, "", "  ")
+
+	// 任务列表本身是 LLM 需要的信息，直接返回 JSON
+	return &agent.ToolResult{
+		Content:  string(data),
+		RichData: richData,
+	}, nil
 }

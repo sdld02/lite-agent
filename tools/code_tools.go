@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"lite-agent/agent"
 	"lite-agent/tools/code"
 )
 
@@ -57,7 +58,7 @@ func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	mode, _ := args["mode"].(string)
 	rootPath, _ := args["root_path"].(string)
 	if rootPath == "" {
@@ -69,64 +70,66 @@ func (t *CodeProbeToolWrapper) Execute(ctx context.Context, args map[string]inte
 		maxDepth = int(v)
 	}
 
+	var result []byte
+	var err error
+
 	switch mode {
 	case "summary":
-		result, err := code.GetProjectSummary(rootPath, maxDepth, nil)
+		result, err = code.GetProjectSummary(rootPath, maxDepth, nil)
 		if err != nil {
-			return "", fmt.Errorf("获取项目摘要失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取项目摘要失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	case "structure":
 		maxItemsPerDir := 15
 		if v, ok := args["max_items_per_dir"].(float64); ok {
 			maxItemsPerDir = int(v)
 		}
-		result, err := code.GetSmartTree(rootPath, maxDepth, maxItemsPerDir, nil)
+		result, err = code.GetSmartTree(rootPath, maxDepth, maxItemsPerDir, nil)
 		if err != nil {
-			return "", fmt.Errorf("获取目录树失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取目录树失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	case "flat":
 		maxItems := 200
 		if v, ok := args["max_items"].(float64); ok {
 			maxItems = int(v)
 		}
-		result, err := code.GetFlatList(rootPath, maxDepth, maxItems, nil)
+		result, err = code.GetFlatList(rootPath, maxDepth, maxItems, nil)
 		if err != nil {
-			return "", fmt.Errorf("获取扁平列表失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取扁平列表失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	case "grouped":
-		result, err := code.GetGroupedByType(rootPath, maxDepth, nil)
+		result, err = code.GetGroupedByType(rootPath, maxDepth, nil)
 		if err != nil {
-			return "", fmt.Errorf("获取类型分组失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取类型分组失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	case "tree":
-		result, err := code.GetProjectTree(rootPath, maxDepth)
+		result, err = code.GetProjectTree(rootPath, maxDepth)
 		if err != nil {
-			return "", fmt.Errorf("获取文本树形结构失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取文本树形结构失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	case "recent":
 		days := 7
 		if v, ok := args["days"].(float64); ok {
 			days = int(v)
 		}
-		result, err := code.GetRecentFiles(rootPath, maxDepth, days)
+		result, err = code.GetRecentFiles(rootPath, maxDepth, days)
 		if err != nil {
-			return "", fmt.Errorf("获取最近修改文件失败: %v", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("获取最近修改文件失败: %v", err)), IsError: true}, nil
 		}
-		return string(result), nil
 
 	default:
-		return "", fmt.Errorf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped, tree, recent", mode)
+		return &agent.ToolResult{
+			Content: agent.FormatValidationError(fmt.Sprintf("不支持的探查模式: %s，支持的模式: summary, structure, flat, grouped, tree, recent", mode)),
+			IsError: true,
+		}, nil
 	}
+
+	return &agent.ToolResult{Content: string(result)}, nil
 }
 
 // ==================== CodeStats 工具包装器 ====================
@@ -167,7 +170,7 @@ func (t *CodeStatsToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *CodeStatsToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *CodeStatsToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	rootPath, _ := args["root_path"].(string)
 	if rootPath == "" {
 		rootPath = "."
@@ -185,8 +188,8 @@ func (t *CodeStatsToolWrapper) Execute(ctx context.Context, args map[string]inte
 
 	result, err := code.GetCodeStats(rootPath, workers, exclude)
 	if err != nil {
-		return "", fmt.Errorf("代码统计失败: %v", err)
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("代码统计失败: %v", err)), IsError: true}, nil
 	}
 
-	return string(result), nil
+	return &agent.ToolResult{Content: string(result)}, nil
 }

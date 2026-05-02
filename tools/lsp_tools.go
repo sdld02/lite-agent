@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"lite-agent/agent"
 	"lite-agent/tools/lsp"
 )
 
@@ -90,17 +91,17 @@ func (t *LSPToolWrapper) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *LSPToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *LSPToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	operation, _ := args["operation"].(string)
 	filePath, _ := args["filePath"].(string)
 	line, _ := args["line"].(float64)
 	character, _ := args["character"].(float64)
 
 	if operation == "" {
-		return "", fmt.Errorf("operation 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("operation 参数不能为空"), IsError: true}, nil
 	}
 	if filePath == "" {
-		return "", fmt.Errorf("filePath 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("filePath 参数不能为空"), IsError: true}, nil
 	}
 
 	// 确保全局管理器已初始化（惰性初始化）
@@ -108,12 +109,15 @@ func (t *LSPToolWrapper) Execute(ctx context.Context, args map[string]interface{
 
 	// 检查 LSP 是否可用
 	if !lsp.IsAvailable() {
-		return fmt.Sprintf("LSP 不可用: 没有配置 LSP 服务器。\n"+
-			"请确保已安装对应的 LSP 服务器:\n"+
-			"  Go:          go install golang.org/x/tools/gopls@latest\n"+
-			"  TypeScript:  npm install -g typescript-language-server typescript\n"+
-			"  Python:      pip install pyright\n"+
-			"  Rust:        rustup component add rust-analyzer\n"), nil
+		return &agent.ToolResult{
+			Content: fmt.Sprintf("LSP 不可用: 没有配置 LSP 服务器。\n"+
+				"请确保已安装对应的 LSP 服务器:\n"+
+				"  Go:          go install golang.org/x/tools/gopls@latest\n"+
+				"  TypeScript:  npm install -g typescript-language-server typescript\n"+
+				"  Python:      pip install pyright\n"+
+				"  Rust:        rustup component add rust-analyzer\n"),
+			IsError: true,
+		}, nil
 	}
 
 	input := lsp.LSPToolInput{
@@ -125,18 +129,20 @@ func (t *LSPToolWrapper) Execute(ctx context.Context, args map[string]interface{
 
 	output, err := lsp.ExecuteLSPOperation(input)
 	if err != nil {
-		// 验证错误直接返回 error
-		return "", err
+		return &agent.ToolResult{Content: agent.FormatToolError(err), IsError: true}, nil
 	}
 
 	// 格式化为可读输出
+	var content string
 	if output.ResultCount > 0 && output.FileCount > 0 {
-		return fmt.Sprintf("[LSP %s] %s\n\n操作: %s | 文件: %s | 结果: %d 条 | 涉及: %d 个文件",
+		content = fmt.Sprintf("[LSP %s] %s\n\n操作: %s | 文件: %s | 结果: %d 条 | 涉及: %d 个文件",
 			output.Operation, output.Result, output.Operation, output.FilePath,
-			output.ResultCount, output.FileCount), nil
+			output.ResultCount, output.FileCount)
+	} else {
+		content = fmt.Sprintf("[LSP %s] %s", output.Operation, output.Result)
 	}
 
-	return fmt.Sprintf("[LSP %s] %s", output.Operation, output.Result), nil
+	return &agent.ToolResult{Content: content}, nil
 }
 
 // ensureManagerInitialized 惰性初始化全局 LSP 管理器

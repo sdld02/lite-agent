@@ -2,8 +2,10 @@ package task
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
+
+	"lite-agent/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,15 +104,15 @@ func (t *TaskUpdateTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	taskID, _ := args["taskId"].(string)
 	if taskID == "" {
-		return "", fmt.Errorf("taskId 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("taskId 参数不能为空"), IsError: true}, nil
 	}
 
 	mgr := GetGlobalManager()
 	if mgr == nil {
-		return "任务系统未初始化", nil
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("任务系统未初始化")), IsError: true}, nil
 	}
 
 	taskListID := mgr.GetTaskListID()
@@ -118,10 +120,10 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{
 	// 获取现有任务
 	existing, err := mgr.Store.Get(taskListID, taskID)
 	if err != nil {
-		return "", fmt.Errorf("查询任务失败: %w", err)
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("查询任务失败: %w", err)), IsError: true}, nil
 	}
 	if existing == nil {
-		return fmt.Sprintf("任务 #%s 不存在", taskID), nil
+		return &agent.ToolResult{Content: fmt.Sprintf("任务 #%s 不存在", taskID), IsError: true}, nil
 	}
 
 	updatedFields := []string{}
@@ -152,22 +154,24 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{
 	// 处理状态更新
 	if statusArg, ok := args["status"].(string); ok && statusArg != "" {
 		if !IsValidStatus(statusArg) {
-			return "", fmt.Errorf("无效状态: %s（有效值: pending, in_progress, completed, deleted）", statusArg)
+			return &agent.ToolResult{Content: agent.FormatValidationError(fmt.Sprintf("无效状态: %s（有效值: pending, in_progress, completed, deleted）", statusArg)), IsError: true}, nil
 		}
 
 		if statusArg == "deleted" {
 			err := mgr.Store.Delete(taskListID, taskID)
 			if err != nil {
-				return "", fmt.Errorf("删除任务失败: %w", err)
+				return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("删除任务失败: %w", err)), IsError: true}, nil
 			}
-			result := map[string]interface{}{
+			richData := map[string]interface{}{
 				"success":       true,
 				"taskId":        taskID,
 				"updatedFields": []string{"deleted"},
 				"statusChange":  map[string]string{"from": string(existing.Status), "to": "deleted"},
 			}
-			data, _ := json.MarshalIndent(result, "", "  ")
-			return string(data), nil
+			return &agent.ToolResult{
+				Content:  fmt.Sprintf("Task #%s deleted successfully.", taskID),
+				RichData: richData,
+			}, nil
 		}
 
 		if TaskStatus(statusArg) != existing.Status {
@@ -188,7 +192,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{
 	if len(updates) > 0 {
 		_, err := mgr.Store.Update(taskListID, taskID, updates)
 		if err != nil {
-			return "", fmt.Errorf("更新任务失败: %w", err)
+			return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("更新任务失败: %w", err)), IsError: true}, nil
 		}
 	}
 
@@ -210,27 +214,34 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{
 	}
 
 	// 构建结果
-	result := map[string]interface{}{
+	richData := map[string]interface{}{
 		"success":       true,
 		"taskId":        taskID,
 		"updatedFields": updatedFields,
 	}
 
+	statusMsg := ""
 	if statusArg, ok := args["status"].(string); ok && statusArg != "" &&
 		statusArg != "deleted" && TaskStatus(statusArg) != existing.Status {
-		result["statusChange"] = map[string]string{
+		richData["statusChange"] = map[string]string{
 			"from": string(existing.Status),
 			"to":   statusArg,
 		}
+		statusMsg = fmt.Sprintf(" Status: %s -> %s.", existing.Status, TaskStatus(statusArg))
 	}
+
+	// 构建精简文本
+	content := fmt.Sprintf("Task #%s updated successfully. Fields: %s.%s", taskID, strings.Join(updatedFields, ", "), statusMsg)
 
 	// 如果标记完成，提示检查 task_list
 	if statusArg, ok := args["status"].(string); ok && statusArg == "completed" {
-		result["hint"] = "任务已标记为完成。调用 task_list 查找下一个可用任务或查看你的工作是否解除了其他任务的阻塞。"
+		content += " Call task_list to find next available task."
 	}
 
-	data, _ := json.MarshalIndent(result, "", "  ")
-	return string(data), nil
+	return &agent.ToolResult{
+		Content:  content,
+		RichData: richData,
+	}, nil
 }
 
 

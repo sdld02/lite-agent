@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"lite-agent/agent"
 )
 
 // ---------------------------------------------------------------------------
@@ -66,21 +68,21 @@ func (t *TaskCreateTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t *TaskCreateTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *TaskCreateTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	subject, _ := args["subject"].(string)
 	description, _ := args["description"].(string)
 	activeForm, _ := args["activeForm"].(string)
 
 	if subject == "" {
-		return "", fmt.Errorf("subject 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("subject 参数不能为空"), IsError: true}, nil
 	}
 	if description == "" {
-		return "", fmt.Errorf("description 参数不能为空")
+		return &agent.ToolResult{Content: agent.FormatValidationError("description 参数不能为空"), IsError: true}, nil
 	}
 
 	mgr := GetGlobalManager()
 	if mgr == nil {
-		return "任务系统未初始化，请先设置任务管理器", nil
+		return &agent.ToolResult{Content: "任务系统未初始化，请先设置任务管理器", IsError: true}, nil
 	}
 
 	taskListID := mgr.GetTaskListID()
@@ -105,7 +107,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, args map[string]interface{
 
 	taskID, err := mgr.Store.Create(taskListID, task)
 	if err != nil {
-		return "", fmt.Errorf("创建任务失败: %w", err)
+		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("创建任务失败: %w", err)), IsError: true}, nil
 	}
 
 	result := map[string]interface{}{
@@ -117,5 +119,5 @@ func (t *TaskCreateTool) Execute(ctx context.Context, args map[string]interface{
 	}
 
 	data, _ := json.MarshalIndent(result, "", "  ")
-	return string(data), nil
+	return &agent.ToolResult{Content: string(data)}, nil
 }

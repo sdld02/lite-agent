@@ -12,9 +12,11 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"lite-agent/agent"
 	"lite-agent/llm"
+	"lite-agent/server"
 	"lite-agent/session"
 	"lite-agent/tools"
 
@@ -129,6 +131,8 @@ func main() {
 	stream := flag.Bool("stream", true, "启用流式输出模式（默认开启，-stream=false 关闭）")
 	newSession := flag.Bool("new", false, "强制开始新会话")
 	sessionID := flag.String("session", "", "指定加载某个 session ID")
+	serverMode := flag.Bool("server", false, "以 WebSocket 服务模式启动（常驻后台）")
+	serverAddr := flag.String("addr", ":9090", "WebSocket 服务监听地址")
 	flag.Parse()
 
 	// 确定 API Key
@@ -277,6 +281,78 @@ func main() {
 	if err != nil {
 		fmt.Printf("警告: 初始化会话存储失败: %v\n", err)
 	}
+
+	// === Server 模式分支 ===
+	if *serverMode {
+		// 构建工具工厂列表（为每个连接创建独立工具实例）
+		toolFactories := []server.ToolFactory{
+			func() agent.Tool { return tools.NewCalculatorTool() },
+			func() agent.Tool { return tools.NewSystemInfoTool() },
+			func() agent.Tool { return tools.NewShellToolUnsafe() },
+			func() agent.Tool { return tools.NewFileEditTool() },
+			func() agent.Tool { return tools.NewFileWriteTool() },
+			func() agent.Tool { return tools.NewFileDiffTool() },
+			func() agent.Tool { return tools.NewFileReadTool() },
+			func() agent.Tool { return tools.NewCodeProbeTool() },
+			func() agent.Tool { return tools.NewCodeStatsTool() },
+			func() agent.Tool { return tools.NewLSPTool() },
+			func() agent.Tool { return tools.NewTaskCreateTool() },
+			func() agent.Tool { return tools.NewTaskUpdateTool() },
+			func() agent.Tool { return tools.NewTaskListTool() },
+			func() agent.Tool { return tools.NewTaskGetTool() },
+			// Agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
+		}
+
+		// 创建 WebSocket 服务（注册表用于子 Agent 工具）
+		srv := server.NewServer(*serverAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories)
+
+		// 注册信号处理：优雅关闭
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigChan
+			fmt.Println("\n🛑 收到退出信号，正在关闭服务...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				fmt.Printf("关闭服务出错: %v\n", err)
+			}
+			os.Exit(0)
+		}()
+
+		// 启动服务（阻塞）
+		fmt.Println("=================================")
+		fmt.Println("  Go AI Agent - WebSocket 服务")
+		fmt.Println("=================================")
+		fmt.Println()
+		fmt.Printf("📡 API: %s\n", finalBaseURL)
+		fmt.Printf("🤖 Model: %s\n", finalModel)
+		fmt.Printf("🌐 服务地址: ws://%s/ws\n", *serverAddr)
+		fmt.Printf("❤️  健康检查: http://%s/health\n", *serverAddr)
+		fmt.Println()
+		fmt.Println("已加载工具:")
+		fmt.Println("  - calculator   : 数学计算")
+		fmt.Println("  - system_info  : 系统信息")
+		fmt.Println("  - shell        : Shell 命令执行")
+		fmt.Println("  - file_edit    : 文件编辑")
+		fmt.Println("  - file_write   : 文件写入")
+		fmt.Println("  - file_diff    : 文件比较")
+		fmt.Println("  - file_read    : 文件读取")
+		fmt.Println("  - code_probe   : 项目结构探查")
+		fmt.Println("  - code_stats   : 代码行数统计")
+		fmt.Println("  - lsp          : LSP 代码智能")
+		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
+		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
+		fmt.Println("=================================")
+		fmt.Println()
+
+		if err := srv.Start(); err != nil {
+			fmt.Printf("服务启动失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// === 交互式 CLI 模式 ===
 
 	// 会话恢复逻辑
 	var currentSession *session.Session

@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lite Agent - 控制面板</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --sidebar-bg: #161822;
+  --surface: #1c1f2e;
+  --surface-hover: #252836;
+  --border: #2a2d3a;
+  --text: #e1e4ed;
+  --text-secondary: #8b8fa3;
+  --text-muted: #5c6078;
+  --accent: #6c8cff;
+  --accent-dim: rgba(108,140,255,0.15);
+  --success: #4ade80;
+  --error: #f87171;
+  --warning: #fbbf24;
+  --reasoning: #7c8aa0;
+  --tool-bg: #1a1d2e;
+  --tool-border: #2e3350;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; font-family:var(--font-sans); background:var(--bg); color:var(--text); overflow:hidden; }
+#app { display:flex; height:100vh; }
+
+#sidebar {
+  width:280px; min-width:280px; background:var(--sidebar-bg);
+  display:flex; flex-direction:column; border-right:1px solid var(--border);
+}
+.sidebar-header {
+  padding:18px 16px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.sidebar-header h1 { font-size:16px; font-weight:700; letter-spacing:-0.3px; }
+.sidebar-header .logo { display:flex; align-items:center; gap:8px; }
+.sidebar-header .logo .dot { width:8px; height:8px; border-radius:50%; background:var(--success); }
+.sidebar-header .logo .dot.disconnected { background:var(--error); }
+.sidebar-header .logo .dot.connecting { background:var(--warning); animation:pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.status-bar { padding:10px 16px; font-size:11px; color:var(--text-muted); border-bottom:1px solid var(--border);
+  display:flex; justify-content:space-between; align-items:center; }
+.status-bar .addr { font-family:var(--font-mono); }
+
+.session-actions { padding:10px 12px; }
+.session-actions button {
+  width:100%; padding:10px; border:1px dashed var(--border); background:transparent;
+  color:var(--text-secondary); border-radius:var(--radius-sm); cursor:pointer;
+  font-size:13px; display:flex; align-items:center; justify-content:center; gap:6px;
+  transition: all 0.2s;
+}
+.session-actions button:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+
+#session-list { flex:1; overflow-y:auto; padding:0 8px 8px; }
+.session-item {
+  padding:10px 12px; margin:2px 0; border-radius:var(--radius-sm); cursor:pointer;
+  display:flex; align-items:center; justify-content:space-between; transition:all 0.15s;
+  font-size:13px; border:1px solid transparent;
+}
+.session-item:hover { background:var(--surface-hover); }
+.session-item.active { background:var(--accent-dim); border-color:var(--accent); }
+.session-item .info { flex:1; min-width:0; }
+.session-item .name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500; }
+.session-item .meta { font-size:11px; color:var(--text-muted); margin-top:2px; }
+.session-item .delete-btn {
+  opacity:0; background:none; border:none; color:var(--error); cursor:pointer;
+  font-size:14px; padding:2px 6px; border-radius:4px; transition:opacity 0.2s;
+}
+.session-item:hover .delete-btn { opacity:1; }
+.session-item .delete-btn:hover { background:rgba(248,113,113,0.15); }
+
+#main { flex:1; display:flex; flex-direction:column; min-width:0; }
+
+#toolbar {
+  padding:12px 20px; border-bottom:1px solid var(--border); display:flex;
+  align-items:center; justify-content:space-between; background:var(--surface);
+}
+#toolbar .session-title { font-weight:600; font-size:15px; }
+#toolbar .actions { display:flex; gap:8px; }
+#toolbar .actions button {
+  padding:6px 14px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:transparent; color:var(--text-secondary); cursor:pointer; font-size:12px;
+  transition:all 0.2s;
+}
+#toolbar .actions button:hover { border-color:var(--accent); color:var(--accent); }
+#toolbar .actions button.danger:hover { border-color:var(--error); color:var(--error); }
+
+#messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:16px; }
+
+.msg { display:flex; flex-direction:column; max-width:85%; animation:slideIn 0.2s ease; }
+@keyframes slideIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+.msg.user { align-self:flex-end; }
+.msg.assistant { align-self:flex-start; }
+.msg .bubble {
+  padding:12px 16px; border-radius:var(--radius); line-height:1.6; font-size:14px; word-break:break-word;
+}
+.msg.user .bubble { background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+.msg.assistant .bubble { background:var(--surface); border:1px solid var(--border); border-bottom-left-radius:4px; }
+.msg .bubble pre {
+  background:#0d1117; border-radius:var(--radius-sm); padding:12px; overflow-x:auto;
+  font-family:var(--font-mono); font-size:13px; margin:8px 0; border:1px solid var(--border);
+}
+.msg .bubble code { font-family:var(--font-mono); font-size:13px; }
+.msg .bubble p { margin:4px 0; }
+.msg .bubble ul, .msg .bubble ol { margin:4px 0; padding-left:20px; }
+.msg .bubble blockquote { border-left:3px solid var(--accent); padding-left:12px; color:var(--text-secondary); margin:8px 0; }
+
+.reasoning-block {
+  margin-bottom:8px; padding:10px 14px; background:rgba(124,138,160,0.08);
+  border-left:2px solid var(--reasoning); border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+  font-size:13px; color:var(--reasoning); font-style:italic;
+}
+.reasoning-block summary { cursor:pointer; font-weight:500; margin-bottom:4px; }
+.reasoning-block summary:hover { color:var(--text-secondary); }
+
+.tool-card {
+  margin:8px 0; background:var(--tool-bg); border:1px solid var(--tool-border);
+  border-radius:var(--radius-sm); overflow:hidden; font-size:13px;
+}
+.tool-card-header {
+  padding:8px 12px; display:flex; align-items:center; gap:8px; cursor:pointer;
+  background:rgba(108,140,255,0.06); user-select:none;
+}
+.tool-card-header .tool-icon { font-size:15px; }
+.tool-card-header .tool-name { font-weight:600; color:var(--accent); font-family:var(--font-mono); font-size:12px; }
+.tool-card-header .tool-arrow { margin-left:auto; transition:transform 0.2s; color:var(--text-muted); }
+.tool-card.open .tool-card-header .tool-arrow { transform:rotate(180deg); }
+.tool-card-body { display:none; padding:10px 12px; }
+.tool-card.open .tool-card-body { display:block; }
+.tool-card-body pre {
+  background:#0d1117; padding:10px; border-radius:var(--radius-sm); overflow-x:auto;
+  font-family:var(--font-mono); font-size:12px; border:1px solid var(--border); max-height:300px;
+}
+.tool-result { margin-top:4px; }
+.tool-result-label { font-size:11px; color:var(--text-muted); margin-bottom:4px; }
+.tool-result .success { color:var(--success); }
+.tool-result .error { color:var(--error); }
+
+.streaming-cursor::after { content:' ▌'; animation:blink 0.8s infinite; color:var(--accent); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.msg.streaming .bubble { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent-dim); }
+
+#input-area { padding:12px 20px; border-top:1px solid var(--border); background:var(--surface); }
+.input-row { display:flex; gap:10px; align-items:flex-end; }
+#input {
+  flex:1; padding:12px 16px; border-radius:var(--radius); border:1px solid var(--border);
+  background:var(--bg); color:var(--text); font-size:14px; font-family:var(--font-sans);
+  resize:none; min-height:44px; max-height:160px; outline:none; transition:border-color 0.2s;
+  line-height:1.4;
+}
+#input:focus { border-color:var(--accent); }
+#input::placeholder { color:var(--text-muted); }
+#send-btn {
+  padding:12px 22px; background:var(--accent); color:#fff; border:none;
+  border-radius:var(--radius); cursor:pointer; font-size:14px; font-weight:600;
+  transition:all 0.2s; white-space:nowrap;
+}
+#send-btn:hover { filter:brightness(1.15); }
+#send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+#stop-btn { padding:12px 16px; background:var(--surface); color:var(--error); border:1px solid var(--error);
+  border-radius:var(--radius); cursor:pointer; font-size:14px; display:none; }
+
+.toast {
+  position:fixed; top:20px; right:20px; padding:12px 20px; border-radius:var(--radius-sm);
+  font-size:13px; z-index:999; animation:slideIn 0.3s ease;
+  background:var(--surface); border:1px solid var(--border); color:var(--text);
+}
+.toast.error { border-color:var(--error); }
+.toast.success { border-color:var(--success); }
+
+.welcome { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:100%; color:var(--text-muted); gap:12px; }
+.welcome .icon { font-size:48px; }
+.welcome h2 { font-weight:600; font-size:18px; color:var(--text-secondary); }
+.welcome p { font-size:13px; max-width:400px; text-align:center; line-height:1.6; }
+.welcome .hints { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; justify-content:center; }
+.welcome .hint {
+  padding:6px 12px; border-radius:20px; border:1px solid var(--border); font-size:12px;
+  cursor:pointer; transition:all 0.2s;
+}
+.welcome .hint:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--text-muted); }
+
+.empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:100%; color:var(--text-muted); gap:8px; font-size:13px; }
+
+.modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100;
+  display:flex; align-items:center; justify-content:center; animation:fadeIn 0.2s ease;
+}
+@keyframes fadeIn { from{opacity:0} to{opacity:1} }
+.modal {
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:24px; width:420px; max-width:90vw;
+}
+.modal h3 { margin-bottom:16px; font-size:16px; }
+.modal label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; margin-top:12px; }
+.modal input {
+  width:100%; padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--bg); color:var(--text); font-size:14px; outline:none;
+}
+.modal input:focus { border-color:var(--accent); }
+.modal-buttons { display:flex; gap:8px; justify-content:flex-end; margin-top:20px; }
+.modal-buttons button {
+  padding:8px 20px; border-radius:var(--radius-sm); font-size:13px; cursor:pointer;
+}
+.modal-buttons .primary { background:var(--accent); color:#fff; border:none; }
+.modal-buttons .secondary { background:transparent; color:var(--text-secondary); border:1px solid var(--border); }
+
+@media (max-width:768px) {
+  #sidebar { width:240px; min-width:240px; }
+  .msg { max-width:92%; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <span class="dot disconnected" id="status-dot"></span>
+        <h1>Lite Agent</h1>
+      </div>
+    </div>
+    <div class="status-bar">
+      <span id="status-text">未连接</span>
+      <span class="addr" id="server-addr">&mdash;</span>
+    </div>
+    <div class="session-actions">
+      <button onclick="createSession()">＋ 新建任务</button>
+    </div>
+    <div id="session-list">
+      <div class="empty-state">暂无任务</div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="toolbar">
+      <span class="session-title" id="current-session-title">选择或创建一个任务</span>
+      <div class="actions">
+        <button onclick="clearSession()" title="清空当前对话">清空对话</button>
+        <button class="danger" onclick="deleteCurrentSession()" title="删除当前任务">删除任务</button>
+      </div>
+    </div>
+    <div id="messages">
+      <div class="welcome">
+        <div class="icon">🤖</div>
+        <h2>Lite Agent 控制面板</h2>
+        <p>通过 WebSocket 连接到 lite-agent 服务，创建多个并行任务，实时查看 AI 执行过程</p>
+        <div class="hints">
+          <span class="hint" onclick="sendHint('帮我分析这个项目的代码结构')">📊 分析项目结构</span>
+          <span class="hint" onclick="sendHint('帮我写一个 HTTP 服务器')">🔧 编写代码</span>
+          <span class="hint" onclick="sendHint('统计所有 Go 文件的代码行数')">📈 代码统计</span>
+        </div>
+      </div>
+    </div>
+    <div id="input-area">
+      <div class="input-row">
+        <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="return onInputKey(event)"></textarea>
+        <button id="stop-btn" onclick="stopStreaming()" title="停止生成">⏹ 停止</button>
+        <button id="send-btn" onclick="sendMessage()">发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="config-modal" style="display:none">
+  <div class="modal">
+    <h3>⚙️ 连接设置</h3>
+    <label>WebSocket 地址</label>
+    <input id="cfg-url" type="text" value="ws://localhost:9090/ws" placeholder="ws://localhost:9090/ws">
+    <div class="modal-buttons">
+      <button class="secondary" onclick="closeConfig()">取消</button>
+      <button class="primary" onclick="saveConfig()">连接</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ========== STATE ==========
+  var state = {
+    serverUrl: localStorage.getItem('lite_agent_url') || 'ws://localhost:9090/ws',
+    sessions: [],
+    activeSessionId: null,
+    ws: null,
+    streaming: false,
+    reconnectTimer: null
+  };
+
+  // ========== HELPERS ==========
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function getActiveSession() {
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === state.activeSessionId) return state.sessions[i];
+    }
+    return null;
+  }
+
+  // ========== SESSION MANAGEMENT ==========
+  window.createSession = function() {
+    var s = {
+      id: 's_' + Date.now(),
+      name: '新任务',
+      createdAt: new Date().toISOString(),
+      messageCount: 0,
+      preview: '',
+      messages: [],
+      serverSessionId: null
+    };
+    state.sessions.unshift(s);
+    state.activeSessionId = s.id;
+    renderSessions();
+    renderMessages();
+    ensureConnected();
+    // Tell server to start a fresh session
+    sendWS({ type: 'new_session' });
+  };
+
+  window.switchSession = function(id) {
+    // Save current session messages before switching
+    state.activeSessionId = id;
+    renderSessions();
+    renderMessages();
+    // Tell server to switch context
+    var s = getActiveSession();
+    if (s && s.serverSessionId) {
+      sendWS({ type: 'load_session', session_id: s.serverSessionId });
+    } else {
+      sendWS({ type: 'new_session' });
+    }
+  };
+
+  window.deleteSession = function(id) {
+    var idx = -1;
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === id) { idx = i; break; }
+    }
+    if (idx < 0) return;
+    state.sessions.splice(idx, 1);
+    if (state.activeSessionId === id) {
+      state.activeSessionId = state.sessions.length > 0 ? state.sessions[0].id : null;
+    }
+    renderSessions();
+    renderMessages();
+    if (id.indexOf('202') === 0) {
+      sendWS({ type: 'delete_session', session_id: id });
+    }
+  };
+
+  window.clearSession = function() {
+    var s = getActiveSession();
+    if (!s) return;
+    s.messages = [];
+    s.messageCount = 0;
+    s.preview = '';
+    s.serverSessionId = null;
+    renderMessages();
+    sendWS({ type: 'new_session' });
+  };
+
+  window.deleteCurrentSession = function() {
+    if (!state.activeSessionId) return;
+    if (!confirm('确定要删除此任务吗？')) return;
+    deleteSession(state.activeSessionId);
+  };
+
+  window.sendHint = function(text) {
+    document.getElementById('input').value = text;
+    sendMessage();
+  };
+
+  // ========== RENDER ==========
+  function renderSessions() {
+    var list = document.getElementById('session-list');
+    if (state.sessions.length === 0) {
+      list.innerHTML = '<div class="empty-state">暂无任务<br>点击「＋ 新建任务」开始</div>';
+    } else {
+      var html = '';
+      for (var i = 0; i < state.sessions.length; i++) {
+        var s = state.sessions[i];
+        var activeClass = s.id === state.activeSessionId ? ' active' : '';
+        html += '<div class="session-item' + activeClass + '" onclick="switchSession(\'' + s.id + '\')">';
+        html += '<div class="info"><div class="name">' + escHtml(s.name) + '</div>';
+        html += '<div class="meta">' + s.messageCount + ' 条消息</div></div>';
+        html += '<button class="delete-btn" onclick="event.stopPropagation();deleteSession(\'' + s.id + '\')" title="删除">✕</button>';
+        html += '</div>';
+      }
+      list.innerHTML = html;
+    }
+    var active = getActiveSession();
+    document.getElementById('current-session-title').textContent = active ? active.name : '选择或创建一个任务';
+  }
+
+  function renderMessages() {
+    var container = document.getElementById('messages');
+    var s = getActiveSession();
+    if (!s || !s.messages || s.messages.length === 0) {
+      container.innerHTML = '<div class="welcome"><div class="icon">🤖</div><h2>Lite Agent 控制面板</h2><p>通过 WebSocket 连接到 lite-agent 服务，创建多个并行任务，实时查看 AI 执行过程</p><div class="hints"><span class="hint" onclick="sendHint(\'帮我分析这个项目的代码结构\')">📊 分析项目结构</span><span class="hint" onclick="sendHint(\'帮我写一个 HTTP 服务器\')">🔧 编写代码</span><span class="hint" onclick="sendHint(\'统计所有 Go 文件的代码行数\')">📈 代码统计</span></div></div>';
+    } else {
+      var html = '';
+      for (var i = 0; i < s.messages.length; i++) {
+        html += renderMessage(s.messages[i], i);
+      }
+      container.innerHTML = html;
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  function renderMessage(m, idx) {
+    var html = '';
+    if (m.role === 'user') {
+      html += '<div class="msg user"><div class="bubble">' + escHtmlBr(m.content) + '</div></div>';
+    } else if (m.role === 'assistant') {
+      html += '<div class="msg assistant" id="msg-' + idx + '">';
+      // Render segments in chronological order if available
+      if (m.segments && m.segments.length > 0) {
+        for (var s = 0; s < m.segments.length; s++) {
+          var seg = m.segments[s];
+          if (seg.type === 'reasoning' && seg.content) {
+            html += '<details class="reasoning-block"><summary>🧠 思考过程</summary>' + escHtmlBr(seg.content) + '</details>';
+          } else if (seg.type === 'text' && seg.content) {
+            html += '<div class="bubble">' + renderMarkdown(seg.content) + '</div>';
+          } else if (seg.type === 'tool_call') {
+            var openClass = seg.open ? ' open' : '';
+            html += '<div class="tool-card' + openClass + '" onclick="this.classList.toggle(\'open\')">';
+            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(seg.name) + '</span><span class="tool-arrow">▼</span></div>';
+            html += '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div><pre>' + escHtml(JSON.stringify(seg.args, null, 2)) + '</pre>';
+            if (seg.result !== undefined) {
+              html += '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (seg.error ? 'error' : 'success') + '">' + escHtml(seg.result) + '</pre></div>';
+            }
+            html += '</div></div>';
+          }
+        }
+      } else {
+        // Fallback: old render order for messages without segments
+        if (m.content) {
+          html += '<div class="bubble">' + renderMarkdown(m.content) + '</div>';
+        }
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          for (var t = 0; t < m.toolCalls.length; t++) {
+            var tc = m.toolCalls[t];
+            var openClass = tc.open ? ' open' : '';
+            html += '<div class="tool-card' + openClass + '" onclick="this.classList.toggle(\'open\')">';
+            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(tc.name) + '</span><span class="tool-arrow">▼</span></div>';
+            html += '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div><pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>';
+            if (tc.result !== undefined) {
+              html += '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (tc.error ? 'error' : 'success') + '">' + escHtml(tc.result) + '</pre></div>';
+            }
+            html += '</div></div>';
+          }
+        }
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function escHtmlBr(text) {
+    if (!text) return '';
+    return escHtml(text).replace(/\n/g, '<br>');
+  }
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    var out = escHtml(text);
+    // Code blocks
+    out = out.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Inline code
+    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold
+    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Italic
+    out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // Newlines inside code blocks should stay, outside become <br>
+    var parts = out.split(/<pre>[\s\S]*?<\/pre>/g);
+    var codes = out.match(/<pre>[\s\S]*?<\/pre>/g) || [];
+    var result = '';
+    for (var i = 0; i < parts.length; i++) {
+      result += parts[i].replace(/\n/g, '<br>');
+      if (codes[i]) result += codes[i];
+    }
+    return result;
+  }
+
+  // ========== WEBSOCKET ==========
+  var reconnectAttempts = 0;
+  var maxReconnectAttempts = 10;
+  var connecting = false; // 防止并发连接
+
+  function ensureConnected() {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
+    if (connecting) return;
+    connect();
+  }
+
+  function connect() {
+    // 清除之前的重连定时器，防止定时器叠加
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+    // 防止并发连接
+    if (connecting) return;
+    connecting = true;
+
+    if (state.ws) {
+      try { state.ws.close(); } catch(e) {}
+      state.ws = null;
+    }
+    setStatus('connecting');
+    var ws = new WebSocket(state.serverUrl);
+    state.ws = ws;
+
+    ws.onopen = function() {
+      if (state.ws !== ws) return; // 忽略已过期的连接
+      connecting = false;
+      reconnectAttempts = 0;
+      setStatus('connected');
+    };
+
+    ws.onmessage = function(event) {
+      if (state.ws !== ws) return;
+      try {
+        var msg = JSON.parse(event.data);
+        handleServerMessage(msg);
+      } catch(e) {
+        console.error('JSON parse error:', e);
+      }
+    };
+
+    ws.onclose = function() {
+      connecting = false;
+      if (state.ws !== ws) return; // 忽略已过期的连接的 onclose
+      setStatus('disconnected');
+      state.ws = null;
+      // 指数退避重连：3s, 6s, 12s, 24s... 最大 30s
+      if (state.sessions.length > 0 && reconnectAttempts < maxReconnectAttempts) {
+        var delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30000);
+        reconnectAttempts++;
+        state.reconnectTimer = setTimeout(connect, delay);
+      }
+    };
+
+    ws.onerror = function() {
+      connecting = false;
+      setStatus('disconnected');
+    };
+  }
+
+  function sendWS(obj) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      toast('未连接到服务器', 'error');
+      ensureConnected();
+      return;
+    }
+    state.ws.send(JSON.stringify(obj));
+  }
+
+  function handleServerMessage(msg) {
+    var s = getActiveSession();
+
+    switch (msg.type) {
+      case 'connected':
+        setStatus('connected');
+        // 请求服务端历史 session 列表
+        sendWS({ type: 'list_sessions' });
+        if (msg.session) {
+          if (s && s.messages.length === 0 && msg.session.message_count > 0) {
+            // 有活跃 session，加载它的历史消息
+            sendWS({ type: 'load_session', session_id: msg.session.id });
+          } else if (!s) {
+            // 没有活跃 session，用服务端最新 session 初始化
+            state.sessions.push({
+              id: msg.session.id,
+              name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
+              createdAt: msg.session.created_at,
+              messageCount: msg.session.message_count,
+              preview: msg.session.preview,
+              messages: [],
+              serverSessionId: msg.session.id
+            });
+            state.activeSessionId = msg.session.id;
+            renderSessions();
+            if (msg.session.message_count > 0) {
+              sendWS({ type: 'load_session', session_id: msg.session.id });
+            }
+          }
+        }
+        break;
+      case 'content':
+        appendContent(msg.content);
+        break;
+      case 'reasoning':
+        appendReasoning(msg.content);
+        break;
+      case 'tool_call':
+        appendToolCall(msg.tool_call);
+        break;
+      case 'tool_result':
+        updateToolResult(msg.result);
+        break;
+      case 'done':
+        finishStream(msg.response, null);
+        break;
+      case 'error':
+        finishStream(null, msg.error);
+        toast(msg.error, 'error');
+        break;
+      case 'session_info':
+        if (msg.session && s) {
+          s.serverSessionId = msg.session.id;
+          s.messageCount = msg.session.message_count;
+          s.preview = msg.session.preview || '';
+          s.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
+          renderSessions();
+        }
+        break;
+      case 'session_list':
+        // 同步服务端的 session 列表到前端
+        if (msg.sessions) {
+          for (var i = 0; i < msg.sessions.length; i++) {
+            var si = msg.sessions[i];
+            var found = null;
+            for (var j = 0; j < state.sessions.length; j++) {
+              if (state.sessions[j].id === si.id) { found = state.sessions[j]; break; }
+            }
+            if (found) {
+              // 更新已存在 session 的元信息
+              found.messageCount = si.message_count;
+              found.preview = si.preview;
+              found.name = si.preview ? si.preview.slice(0, 30) : si.id;
+              if (!found.serverSessionId) found.serverSessionId = si.id;
+              if (!found.messages) found.messages = [];
+            } else {
+              // 新增 session
+              state.sessions.push({
+                id: si.id,
+                name: si.preview ? si.preview.slice(0, 30) : si.id,
+                createdAt: si.created_at,
+                messageCount: si.message_count,
+                preview: si.preview,
+                messages: [],
+                serverSessionId: si.id
+              });
+            }
+          }
+          renderSessions();
+          // 如果还没有活跃 session，自动选中第一个
+          if (!state.activeSessionId && state.sessions.length > 0) {
+            state.activeSessionId = state.sessions[0].id;
+            renderSessions();
+          }
+        }
+        break;
+      case 'status':
+        if (msg.status) {
+          document.getElementById('server-addr').textContent = msg.status.active_connections + ' 连接 · ' + msg.status.uptime;
+        }
+        break;
+    }
+  }
+
+  // ========== STREAMING (real-time DOM construction in chronological order) ==========
+  var streamMsgIdx = -1;
+  var streamContainerEl = null;  // stream container DOM element
+  var streamLastType = '';       // 'reasoning' | 'text' | 'tool_call'
+  var streamLastEl = null;       // last appended DOM element for content updates
+
+  function ensureStreamMsg() {
+    var s = getActiveSession();
+    if (!s) return null;
+    state.streaming = true;
+    var container = document.getElementById('messages');
+    var welcome = container.querySelector('.welcome');
+    if (welcome) welcome.remove();
+
+    var lastMsg = s.messages[s.messages.length - 1];
+    if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg._done) {
+      s.messages.push({ role: 'assistant', content: '', reasoning: '', toolCalls: [], segments: [], _done: false });
+      var div = document.createElement('div');
+      div.className = 'msg assistant streaming';
+      div.id = 'msg-' + (s.messages.length - 1);
+      div.innerHTML = '<div class="stream-container" id="stream-' + (s.messages.length - 1) + '"></div>';
+      container.appendChild(div);
+      streamMsgIdx = s.messages.length - 1;
+      streamContainerEl = document.getElementById('stream-' + streamMsgIdx);
+      streamLastType = '';
+      streamLastEl = null;
+    } else {
+      streamMsgIdx = s.messages.length - 1;
+      if (!streamContainerEl) {
+        streamContainerEl = document.getElementById('stream-' + streamMsgIdx);
+      }
+    }
+    updateSendButton();
+    return s.messages[s.messages.length - 1];
+  }
+
+  function appendReasoning(chunk) {
+    var cur = ensureStreamMsg();
+    if (!cur) return;
+    cur.reasoning += chunk;
+    // Track segment order
+    if (!cur.segments) cur.segments = [];
+    var lastSeg = cur.segments[cur.segments.length - 1];
+    if (lastSeg && lastSeg.type === 'reasoning') {
+      lastSeg.content += chunk;
+    } else {
+      cur.segments.push({ type: 'reasoning', content: chunk });
+    }
+    // 获取最后一个 reasoning segment 的独立内容（避免多轮累积拼接）
+    var lastRS = null;
+    for (var si = cur.segments.length - 1; si >= 0; si--) {
+      if (cur.segments[si].type === 'reasoning') { lastRS = cur.segments[si]; break; }
+    }
+    var displayReasoning = lastRS ? lastRS.content : cur.reasoning;
+    // Real-time DOM: create/update reasoning block
+    if (streamContainerEl) {
+      if (streamLastType === 'reasoning' && streamLastEl) {
+        var rc = streamLastEl.querySelector('.reasoning-content');
+        if (rc) rc.textContent = displayReasoning;
+      } else {
+        var details = document.createElement('details');
+        details.className = 'reasoning-block';
+        details.open = true;
+        details.innerHTML = '<summary>🧠 思考过程</summary><div class="reasoning-content">' + escHtml(displayReasoning) + '</div>';
+        streamContainerEl.appendChild(details);
+        streamLastType = 'reasoning';
+        streamLastEl = details;
+      }
+    }
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function appendContent(chunk) {
+    var cur = ensureStreamMsg();
+    if (!cur) return;
+    cur.content += chunk;
+    // Track segment order
+    if (!cur.segments) cur.segments = [];
+    var lastSeg = cur.segments[cur.segments.length - 1];
+    if (lastSeg && lastSeg.type === 'text') {
+      lastSeg.content += chunk;
+    } else {
+      cur.segments.push({ type: 'text', content: chunk });
+    }
+    // 获取最后一个 text segment 的独立内容（避免多轮累积拼接）
+    var lastTS = null;
+    for (var si = cur.segments.length - 1; si >= 0; si--) {
+      if (cur.segments[si].type === 'text') { lastTS = cur.segments[si]; break; }
+    }
+    var displayContent = lastTS ? lastTS.content : cur.content;
+    // Real-time DOM: create/update text bubble as plain text (no flicker)
+    if (streamContainerEl) {
+      if (streamLastType === 'text' && streamLastEl) {
+        streamLastEl.textContent = displayContent;
+      } else {
+        var bubble = document.createElement('div');
+        bubble.className = 'bubble streaming-cursor';
+        bubble.textContent = displayContent;
+        streamContainerEl.appendChild(bubble);
+        streamLastType = 'text';
+        streamLastEl = bubble;
+      }
+    }
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function appendToolCall(tc) {
+    var cur = ensureStreamMsg();
+    if (!cur) return;
+    cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, open: true });
+    // Track segment order
+    if (!cur.segments) cur.segments = [];
+    cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, open: true });
+    // Real-time DOM: append tool card (open, with pending result)
+    if (streamContainerEl) {
+      var card = document.createElement('div');
+      card.className = 'tool-card open';
+      card.setAttribute('data-tool-name', tc.name);
+      card.innerHTML = '<div class="tool-card-header" onclick="this.parentElement.classList.toggle(\'open\')">' +
+        '<span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(tc.name) + '</span>' +
+        '<span class="tool-arrow">▼</span></div>' +
+        '<div class="tool-card-body">' +
+        '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
+        '<pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>' +
+        '<div class="tool-result"><div class="tool-result-label">结果</div>' +
+        '<pre class="success" style="opacity:0.6">⏳ 执行中...</pre></div></div>';
+      streamContainerEl.appendChild(card);
+      streamLastType = 'tool_call';
+      streamLastEl = card;
+    }
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function updateToolResult(result) {
+    var cur = ensureStreamMsg();
+    if (!cur) return;
+    if (cur.toolCalls && cur.toolCalls.length > 0) {
+      var lastTc = cur.toolCalls[cur.toolCalls.length - 1];
+      lastTc.result = result;
+      lastTc.error = result.indexOf('错误') === 0;
+    }
+    // Update the matching segment too
+    if (cur.segments && cur.segments.length > 0) {
+      for (var i = cur.segments.length - 1; i >= 0; i--) {
+        if (cur.segments[i].type === 'tool_call') {
+          cur.segments[i].result = result;
+          cur.segments[i].error = result.indexOf('错误') === 0;
+          break;
+        }
+      }
+    }
+    // Real-time DOM: update the last tool card's result
+    if (streamContainerEl) {
+      var cards = streamContainerEl.querySelectorAll('.tool-card');
+      if (cards.length > 0) {
+        var lastCard = cards[cards.length - 1];
+        var resultPre = lastCard.querySelector('.tool-result pre');
+        if (resultPre) {
+          resultPre.textContent = result;
+          resultPre.style.opacity = '1';
+          resultPre.className = lastTc ? (lastTc.error ? 'error' : 'success') : 'success';
+        }
+      }
+      streamLastType = 'tool_call'; // keep type so next content creates new bubble
+    }
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function finishStream(response, error) {
+    state.streaming = false;
+    var idx = streamMsgIdx;
+    streamMsgIdx = -1;
+    streamContainerEl = null;
+    streamLastType = '';
+    streamLastEl = null;
+    var s = getActiveSession();
+    if (!s) return;
+    var lastMsg = s.messages[s.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant') {
+      lastMsg._done = true;
+      if (response !== undefined && response !== null) lastMsg.content = response;
+    }
+    if (error) {
+      s.messages.push({ role: 'assistant', content: '❌ ' + error, reasoning: '', toolCalls: [], segments: [], _done: true });
+    }
+    // Finalize: convert plain-text bubbles to markdown rendering
+    var msgEl = document.getElementById('msg-' + idx);
+    if (msgEl && lastMsg && !error) {
+      var bubbles = msgEl.querySelectorAll('.bubble');
+      for (var b = 0; b < bubbles.length; b++) {
+        var segIdx = -1;
+        var segCount = 0;
+        for (var si = 0; si < lastMsg.segments.length; si++) {
+          if (lastMsg.segments[si].type === 'text') {
+            if (segCount === b) { segIdx = si; break; }
+            segCount++;
+          }
+        }
+        if (segIdx >= 0) {
+          bubbles[b].innerHTML = renderMarkdown(lastMsg.segments[segIdx].content);
+        }
+      }
+      // Convert reasoning blocks from textContent to escHtmlBr
+      var reasonings = msgEl.querySelectorAll('.reasoning-content');
+      for (var r = 0; r < reasonings.length; r++) {
+        reasonings[r].innerHTML = escHtmlBr(reasonings[r].textContent);
+      }
+      msgEl.classList.remove('streaming');
+    }
+    s.messageCount = s.messages.length;
+    var firstUser = null;
+    for (var i = 0; i < s.messages.length; i++) {
+      if (s.messages[i].role === 'user') { firstUser = s.messages[i]; break; }
+    }
+    s.preview = firstUser ? firstUser.content.slice(0, 50) : '';
+    if (s.preview) s.name = s.preview.slice(0, 30);
+    // If error, do full re-render; otherwise DOM is already built
+    if (error) {
+      renderMessages();
+    }
+    renderSessions();
+    updateSendButton();
+  }
+
+  window.stopStreaming = function() {
+    if (state.ws) {
+      try { state.ws.close(); } catch(e) {}
+      state.ws = null;
+    }
+    state.streaming = false;
+    connecting = false;
+    reconnectAttempts = 0;
+    updateSendButton();
+    finishStream(null, '用户停止生成');
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+    state.reconnectTimer = setTimeout(connect, 1000);
+  };
+
+  function updateSendButton() {
+    var sendBtn = document.getElementById('send-btn');
+    var stopBtn = document.getElementById('stop-btn');
+    if (state.streaming) {
+      sendBtn.style.display = 'none';
+      stopBtn.style.display = 'block';
+    } else {
+      sendBtn.style.display = 'block';
+      stopBtn.style.display = 'none';
+    }
+    sendBtn.disabled = state.streaming;
+  }
+
+  // ========== USER INPUT ==========
+  window.onInputKey = function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+      return false;
+    }
+    return true;
+  };
+
+  window.sendMessage = function() {
+    var input = document.getElementById('input');
+    var text = input.value.trim();
+    if (!text || state.streaming) return;
+    input.value = '';
+    input.style.height = 'auto';
+
+    if (!state.activeSessionId) {
+      createSession();
+    }
+
+    var s = getActiveSession();
+    s.messages.push({ role: 'user', content: text, reasoning: '', toolCalls: [] });
+    s.messageCount = s.messages.length;
+    s.preview = text.slice(0, 50);
+    s.name = text.slice(0, 30);
+    renderMessages();
+    renderSessions();
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+
+    ensureConnected();
+    var delay = (state.ws && state.ws.readyState === WebSocket.OPEN) ? 0 : 500;
+    setTimeout(function() {
+      sendWS({ type: 'chat', content: text });
+    }, delay);
+  };
+
+  // ========== STATUS ==========
+  function setStatus(status) {
+    var dot = document.getElementById('status-dot');
+    var text = document.getElementById('status-text');
+    dot.className = 'dot';
+    if (status === 'connected') { text.textContent = '已连接'; }
+    else if (status === 'connecting') { dot.classList.add('connecting'); text.textContent = '连接中...'; }
+    else { dot.classList.add('disconnected'); text.textContent = '未连接'; }
+  }
+
+  // ========== CONFIG ==========
+  window.showConfig = function() {
+    document.getElementById('cfg-url').value = state.serverUrl;
+    document.getElementById('config-modal').style.display = 'flex';
+  };
+  window.closeConfig = function() { document.getElementById('config-modal').style.display = 'none'; };
+  window.saveConfig = function() {
+    state.serverUrl = document.getElementById('cfg-url').value.trim();
+    localStorage.setItem('lite_agent_url', state.serverUrl);
+    closeConfig();
+    reconnectAttempts = 0;
+    connecting = false;
+    connect();
+  };
+
+  // ========== TOAST ==========
+  function toast(msg, type) {
+    var el = document.createElement('div');
+    el.className = 'toast ' + (type || '');
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(function() { el.remove(); }, 3000);
+  }
+
+  // ========== INIT ==========
+  document.addEventListener('DOMContentLoaded', function() {
+    try {
+      var saved = localStorage.getItem('lite_agent_sessions');
+      if (saved) state.sessions = JSON.parse(saved);
+    } catch(e) {}
+    if (state.sessions.length > 0) {
+      state.activeSessionId = state.sessions[0].id;
+    }
+    renderSessions();
+    renderMessages();
+
+    if (!localStorage.getItem('lite_agent_url')) {
+      showConfig();
+    }
+
+    connect();
+
+    var input = document.getElementById('input');
+    input.addEventListener('input', function() {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    });
+
+    setInterval(function() {
+      // 保存所有 sessions 到 localStorage（包括服务端 session）
+      var local = [];
+      for (var i = 0; i < state.sessions.length; i++) {
+        local.push({
+          id: state.sessions[i].id,
+          name: state.sessions[i].name,
+          createdAt: state.sessions[i].createdAt,
+          messageCount: state.sessions[i].messageCount,
+          preview: state.sessions[i].preview,
+          serverSessionId: state.sessions[i].serverSessionId
+        });
+      }
+      localStorage.setItem('lite_agent_sessions', JSON.stringify(local));
+    }, 2000);
+
+    var header = document.querySelector('.sidebar-header');
+    header.style.cursor = 'pointer';
+    header.addEventListener('dblclick', showConfig);
+  });
+
+})();
+</script>
+</body>
+</html>

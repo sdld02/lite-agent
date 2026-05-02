@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Store 会话文件存储
 type Store struct {
 	baseDir string
+	mu      sync.Mutex // 保护并发文件写入
 }
 
 // NewStore 创建 Store，自动创建存储目录
@@ -32,6 +34,9 @@ func (s *Store) Save(session *Session) error {
 	if err != nil {
 		return fmt.Errorf("序列化会话失败: %w", err)
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	filePath := s.filePath(session.ID)
 	tmpPath := filePath + ".tmp"

@@ -2,9 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	mainagent "lite-agent/agent"
 )
 
 // AgentTool 子Agent工具
@@ -97,12 +98,12 @@ func (t *AgentTool) Parameters() map[string]interface{} {
 }
 
 // Execute 执行 Agent 工具调用
-func (t *AgentTool) Execute(ctx context.Context, args map[string]interface{}) (string, error) {
+func (t *AgentTool) Execute(ctx context.Context, args map[string]interface{}) (*mainagent.ToolResult, error) {
 	// 解析参数
 	description, _ := args["description"].(string)
 	prompt, ok := args["prompt"].(string)
 	if !ok || prompt == "" {
-		return "", fmt.Errorf("prompt 参数必须是字符串且不能为空")
+		return &mainagent.ToolResult{Content: mainagent.FormatValidationError("prompt 参数必须是字符串且不能为空"), IsError: true}, nil
 	}
 
 	subagentType, _ := args["subagent_type"].(string)
@@ -125,8 +126,11 @@ func (t *AgentTool) Execute(ctx context.Context, args map[string]interface{}) (s
 			for i, d := range t.definitions {
 				available[i] = d.AgentType
 			}
-			return "", fmt.Errorf("unknown agent type '%s'. Available: %s",
-				subagentType, strings.Join(available, ", "))
+			return &mainagent.ToolResult{
+				Content: mainagent.FormatToolError(fmt.Errorf("unknown agent type '%s'. Available: %s",
+					subagentType, strings.Join(available, ", "))),
+				IsError: true,
+			}, nil
 		}
 	} else {
 		// 默认使用 general-purpose
@@ -145,11 +149,11 @@ func (t *AgentTool) Execute(ctx context.Context, args map[string]interface{}) (s
 	// 运行子Agent
 	result, err := t.runner.Run(ctx, def, prompt)
 	if err != nil {
-		return "", fmt.Errorf("sub-agent failed: %w", err)
+		return &mainagent.ToolResult{Content: mainagent.FormatToolError(fmt.Errorf("sub-agent failed: %w", err)), IsError: true}, nil
 	}
 
-	// 格式化输出
-	output := map[string]interface{}{
+	// 格式化输出：LLM 只需要子 Agent 的回复内容
+	richData := map[string]interface{}{
 		"agentId":           result.AgentID,
 		"agentType":         result.AgentType,
 		"content":           result.Content,
@@ -160,9 +164,11 @@ func (t *AgentTool) Execute(ctx context.Context, args map[string]interface{}) (s
 	}
 
 	if description != "" {
-		output["description"] = description
+		richData["description"] = description
 	}
 
-	data, _ := json.MarshalIndent(output, "", "  ")
-	return string(data), nil
+	return &mainagent.ToolResult{
+		Content:  result.Content,
+		RichData: richData,
+	}, nil
 }
