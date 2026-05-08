@@ -5,6 +5,7 @@ import (
     "fmt"
     "os"
     "path/filepath"
+    "runtime"
     "strings"
 
     "github.com/sergi/go-diff/diffmatchpatch" // go get github.com/sergi/go-diff/diffmatchpatch
@@ -138,7 +139,7 @@ func createNewFile(path, content string) (*FileEditOutput, error) {
 
     return &FileEditOutput{
         EditedContent: content,
-        Patch:         fmt.Sprintf("--- /dev/null\n+++ %s\n@@ -0,0 +1 @@\n+%s", path, content),
+        Patch:         fmt.Sprintf("--- null\n+++ %s\n@@ -0,0 +1 @@\n+%s", path, content),
         Message:       "New file created",
     }, nil
 }
@@ -300,35 +301,34 @@ func countLinesChanged(a, b string) int {
 }
 
 
-// checkWritePermission 检查文件或其父目录的写入权限
+// checkWritePermission 检查文件或其父目录的写入权限。
+// 使用 os.OpenFile 试探性写入检查，Windows/Unix 均适用。
 func checkWritePermission(path string) error {
-    info, err := os.Stat(path)
+    // 尝试以写模式打开文件（不会截断，仅检查权限）
+    f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
     if err == nil {
-        // 文件存在，检查是否可写
-        if info.Mode().Perm()&0200 == 0 {
-            return fmt.Errorf("file is read-only: %s", path)
-        }
+        f.Close()
         return nil
     }
-    if !os.IsNotExist(err) {
-        return fmt.Errorf("cannot stat file: %w", err)
-    }
+
     // 文件不存在，检查父目录是否可写
     dir := filepath.Dir(path)
-    dirInfo, err := os.Stat(dir)
+    if dir == "" {
+        dir = "."
+    }
+    // 尝试在父目录创建临时文件来验证写权限
+    tmpFile, err := os.CreateTemp(dir, ".lite-write-check-*")
     if err != nil {
-        if os.IsNotExist(err) {
-            // 父目录也不存在，将由 MkdirAll 创建，检查更上层
-            return nil
+        if os.IsPermission(err) {
+            return fmt.Errorf("no write permission for directory: %s", dir)
         }
-        return fmt.Errorf("cannot stat parent directory: %w", err)
+        if os.IsNotExist(err) {
+            return nil // 父目录不存在，将由 MkdirAll 创建
+        }
+        return fmt.Errorf("cannot write to directory: %s: %w", dir, err)
     }
-    if !dirInfo.IsDir() {
-        return fmt.Errorf("parent path is not a directory: %s", dir)
-    }
-    if dirInfo.Mode().Perm()&0200 == 0 {
-        return fmt.Errorf("parent directory is read-only: %s", dir)
-    }
+    tmpFile.Close()
+    os.Remove(tmpFile.Name())
     return nil
 }
 
@@ -338,7 +338,7 @@ func validatePathSafety(path string) error {
     // 清理路径（消除 ../ 和 ./ ）
     cleaned := filepath.Clean(path)
 
-    // 敏感系统路径黑名单
+    // 敏感系统路径黑名单（Unix）
     sensitiveRoots := []string{
         "/etc",
         "/var",
@@ -350,6 +350,26 @@ func validatePathSafety(path string) error {
         "/proc",
         "/sys",
         "/root",
+    }
+
+    // Windows 敏感系统路径
+    if runtime.GOOS == "windows" {
+        systemDrive := os.Getenv("SystemDrive")
+        if systemDrive == "" {
+            systemDrive = "C:"
+        }
+        // 使用 filepath.Join 构建路径，自动使用正确的分隔符
+        winRoots := []string{
+            filepath.Join(systemDrive, "Windows"),
+            filepath.Join(systemDrive, "Windows", "System32"),
+            filepath.Join(systemDrive, "Windows", "SysWOW64"),
+            filepath.Join(systemDrive, "Program Files"),
+            filepath.Join(systemDrive, "Program Files (x86)"),
+            filepath.Join(systemDrive, "ProgramData"),
+            filepath.Join(systemDrive, "Users", "Default"),
+            filepath.Join(systemDrive, "$Recycle.Bin"),
+        }
+        sensitiveRoots = append(sensitiveRoots, winRoots...)
     }
 
     for _, root := range sensitiveRoots {

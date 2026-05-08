@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // TaskStore 任务持久化存储接口。
@@ -27,38 +26,13 @@ type TaskStore interface {
 // 存储结构：
 //
 //	~/.lite-agent/tasks/{taskListId}/
-//	  ├── .lock           # 文件锁（syscall.Flock）
+//	  ├── .lock           # 文件锁（Unix: Flock / Windows: LockFileEx）
 //	  ├── .highwatermark  # 最大已分配 ID
 //	  ├── 1.json
 //	  └── 2.json
 type FileTaskStore struct {
 	mu       sync.Mutex // 进程内互斥
 	basePath string
-}
-
-// fileLock 封装 syscall.Flock 文件锁
-type fileLock struct {
-	f *os.File
-}
-
-func newFileLock(path string) (*fileLock, error) {
-	dir := filepath.Dir(path)
-	os.MkdirAll(dir, 0755) //nolint:errcheck
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return &fileLock{f: f}, nil
-}
-
-func (l *fileLock) Lock() error {
-	return syscall.Flock(int(l.f.Fd()), syscall.LOCK_EX)
-}
-
-func (l *fileLock) Unlock() error {
-	defer l.f.Close()
-	return syscall.Flock(int(l.f.Fd()), syscall.LOCK_UN)
 }
 
 // NewFileTaskStore 创建文件系统任务存储

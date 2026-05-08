@@ -90,7 +90,7 @@ func FileWriteTool(input FileWriteInput) (*FileWriteOutput, error) {
     // 6. 生成 patch
     var patch string
     if isNewFile {
-        patch = fmt.Sprintf("--- /dev/null\n+++ %s\n@@ -0,0 +1 @@\n+%s", fullPath, input.Content)
+        patch = fmt.Sprintf("--- null\n+++ %s\n@@ -0,0 +1 @@\n+%s", fullPath, input.Content)
     } else {
         patch = diffToUnified(originalContent, input.Content)
     }

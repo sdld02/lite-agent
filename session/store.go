@@ -45,6 +45,8 @@ func (s *Store) Save(session *Session) error {
 		return fmt.Errorf("写入临时文件失败: %w", err)
 	}
 
+	// Windows 兼容：如果目标已存在，需先删除才能 Rename
+	os.Remove(filePath) //nolint:errcheck
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		os.Remove(tmpPath) // 清理临时文件
 		return fmt.Errorf("替换会话文件失败: %w", err)
