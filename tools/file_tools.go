@@ -32,7 +32,10 @@ func (t *FileEditToolWrapper) Description() string {
 - 仅在用户明确要求时才使用 emoji；除非被要求，否则不要在文件中添加 emoji。
 - 如果 old_string 在文件中不是唯一的，编辑将失败。请提供包含更多上下文的更大字符串以确保唯一性，或使用 replace_all 来替换所有匹配项。
 - 使用尽可能小但能明确唯一定位的 old_string —— 通常连续 2-4 行就足够。避免在较少内容即可唯一定位目标时提供 10 行以上的上下文。
-- 当需要在整个文件中替换或重命名字符串时，请使用 replace_all 参数（例如重命名变量时非常有用）。`
+- 当需要在整个文件中替换或重命名字符串时，请使用 replace_all 参数（例如重命名变量时非常有用）。
+- line_start/line_end：按行号范围替换整行，无需提供 old_string，更简单可靠。
+- dry_run：设为 true 预览 diff 而不实际写入，确认无误后再去掉此参数执行。
+- edits：一次传入多个编辑操作数组 [{"old":"...","new":"..."}, ...]，减少往返。`
 }
 
 func (t *FileEditToolWrapper) Parameters() map[string]interface{} {
@@ -55,6 +58,29 @@ func (t *FileEditToolWrapper) Parameters() map[string]interface{} {
 				"type":        "boolean",
 				"description": "是否替换所有匹配项，默认只替换第一个",
 			},
+			"line_start": map[string]interface{}{
+				"type":        "integer",
+				"description": "替换整行的起始行号（1-based）。配合 line_end 使用，替换指定行号范围。与 old_string 二选一",
+			},
+			"line_end": map[string]interface{}{
+				"type":        "integer",
+				"description": "替换整行的结束行号（1-based）。默认等于 line_start（只替换一行）",
+			},
+			"dry_run": map[string]interface{}{
+				"type":        "boolean",
+				"description": "预览模式：只返回 diff 不实际写入文件。默认 false",
+			},
+			"edits": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"old": map[string]interface{}{"type": "string", "description": "要被替换的原始文本"},
+						"new": map[string]interface{}{"type": "string", "description": "替换后的新文本"},
+					},
+				},
+				"description": "批量编辑操作数组，一次传入多个 {old, new} 对。与 old_string/new_string 互斥",
+			},
 			"intent": map[string]interface{}{
 				"type":        "string",
 				"description": "调用此工具的意图，如: 修复 main.go 中的空指针异常",
@@ -69,6 +95,21 @@ func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]inter
 	oldString, _ := args["old_string"].(string)
 	newString, _ := args["new_string"].(string)
 	replaceAll, _ := args["replace_all"].(bool)
+	lineStart, _ := args["line_start"].(float64)
+	lineEnd, _ := args["line_end"].(float64)
+	dryRun, _ := args["dry_run"].(bool)
+
+	// 解析 edits 数组
+	var edits []file.EditPair
+	if rawEdits, ok := args["edits"].([]interface{}); ok {
+		for _, raw := range rawEdits {
+			if m, ok := raw.(map[string]interface{}); ok {
+				o, _ := m["old"].(string)
+				n, _ := m["new"].(string)
+				edits = append(edits, file.EditPair{Old: o, New: n})
+			}
+		}
+	}
 
 	if filePath == "" {
 		return &agent.ToolResult{
@@ -82,6 +123,10 @@ func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]inter
 		OldString:  oldString,
 		NewString:  newString,
 		ReplaceAll: replaceAll,
+		LineStart:  int(lineStart),
+		LineEnd:    int(lineEnd),
+		DryRun:     dryRun,
+		Edits:      edits,
 	}
 
 	output, err := file.FileEditTool(input)
@@ -92,18 +137,32 @@ func (t *FileEditToolWrapper) Execute(ctx context.Context, args map[string]inter
 		}, nil
 	}
 
-	// LLM 看到精简确认文本 + diff 结果
+	// 构建输出
 	var content string
-	if oldString == "" {
-		content = fmt.Sprintf("New file created at: %s", filePath)
-	} else if replaceAll {
-		content = fmt.Sprintf("The file %s has been updated. All occurrences were successfully replaced.", filePath)
+	if output.DryRun {
+		content = "[DRY RUN 预览] "
 	} else {
-		content = fmt.Sprintf("The file %s has been updated successfully.", filePath)
+		content = ""
+	}
+
+	if oldString == "" && len(edits) == 0 && lineStart == 0 {
+		content += fmt.Sprintf("New file created at: %s", filePath)
+	} else if len(edits) > 0 {
+		content += fmt.Sprintf("The file %s has been updated. %d edit(s) applied successfully.", filePath, len(edits))
+	} else if lineStart > 0 {
+		content += fmt.Sprintf("The file %s has been updated. Lines %d-%d replaced.", filePath, int(lineStart), int(lineEnd))
+	} else if replaceAll {
+		content += fmt.Sprintf("The file %s has been updated. All occurrences successfully replaced.", filePath)
+	} else {
+		content += fmt.Sprintf("The file %s has been updated successfully.", filePath)
 	}
 
 	if output.Patch != "" {
 		content += "\n\n" + output.Patch
+	}
+
+	if output.Suggestions != "" {
+		content += "\n\n" + output.Suggestions
 	}
 
 	return &agent.ToolResult{
@@ -293,14 +352,16 @@ func (t *FileReadToolWrapper) Name() string {
 }
 
 func (t *FileReadToolWrapper) Description() string {
-	return `读取文件内容。
+	return `读取文件内容，支持分页和多种读取模式。
+
 用法：
-- 读取指定路径的文件内容
-- 支持设置最大读取行数，避免读取过大文件
-- 支持相对路径和绝对路径
-- 如果文件不存在，会返回文件不存在的状态
-- 如果文件是目录，会返回目录信息
-- 如果文件过大，会返回错误信息`
+- 读取指定路径的文件内容。
+- 支持 offset 参数从指定行开始读取（1-based），搭配 max_lines 实现分页。
+- head_lines=N 快捷读取前N行；tail_lines=N 快捷读取后N行。
+- 默认不显示行号（避免干扰 file_edit）。如需要行号，设置 show_line_numbers=true。
+- 截断时会给出智能提示：包含文件大小、总行数、建议分段策略等信息。
+- 返回的元信息头包含 [File: name | N lines | X.XKB]，帮助快速了解文件全貌。
+- 支持相对路径和绝对路径。文件不存在或为目录时返回对应状态提示。`
 }
 
 func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
@@ -315,9 +376,25 @@ func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
 				"type":        "integer",
 				"description": "最大读取行数，0表示无限制（默认1000）",
 			},
+			"offset": map[string]interface{}{
+				"type":        "integer",
+				"description": "从第几行开始读取（1-based），默认从第1行开始。用于大文件分页读取",
+			},
+			"head_lines": map[string]interface{}{
+				"type":        "integer",
+				"description": "只读取文件前N行（与offset/tail_lines互斥）",
+			},
+			"tail_lines": map[string]interface{}{
+				"type":        "integer",
+				"description": "只读取文件后N行（与offset/head_lines互斥）",
+			},
+			"show_line_numbers": map[string]interface{}{
+				"type":        "boolean",
+				"description": "是否在输出中显示行号，默认false。行号格式为 '行号\\t内容'",
+			},
 			"encoding": map[string]interface{}{
 				"type":        "string",
-				"description": "文件编码，默认utf-8",
+				"description": "文件编码，默认utf-8。支持: utf-8, gbk, latin-1, utf-16le, utf-16be",
 			},
 			"intent": map[string]interface{}{
 				"type":        "string",
@@ -331,6 +408,10 @@ func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
 func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
 	filePath, _ := args["file_path"].(string)
 	maxLines, _ := args["max_lines"].(float64)
+	offset, _ := args["offset"].(float64)
+	headLines, _ := args["head_lines"].(float64)
+	tailLines, _ := args["tail_lines"].(float64)
+	showLineNumbers, hasShowLN := args["show_line_numbers"].(bool)
 	encoding, _ := args["encoding"].(string)
 
 	if filePath == "" {
@@ -340,10 +421,19 @@ func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]inter
 		}, nil
 	}
 
+	var showLN *bool
+	if hasShowLN {
+		showLN = &showLineNumbers
+	}
+
 	input := file.FileReadInput{
-		FilePath: filePath,
-		MaxLines: int(maxLines),
-		Encoding: encoding,
+		FilePath:        filePath,
+		MaxLines:        int(maxLines),
+		Offset:          int(offset),
+		HeadLines:       int(headLines),
+		TailLines:       int(tailLines),
+		ShowLineNumbers: showLN,
+		Encoding:        encoding,
 	}
 
 	output, err := file.FileReadTool(input)
@@ -370,8 +460,22 @@ func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]inter
 		}, nil
 	}
 
-	// 成功：返回带行号的纯文本内容（类似 cat -n 格式）
-	content := formatContentWithLineNumbers(output.Content, output.Truncated, output.Lines, output.LinesRead)
+	// 成功：根据 show_line_numbers 决定格式
+	var content string
+
+	// 先输出元信息头
+	if output.Header != "" {
+		content = output.Header + "\n\n"
+	}
+
+	if hasShowLN && showLineNumbers {
+		content += formatContentWithLineNumbers(output.Content, output.Truncated, output.Lines, output.LinesRead, output.LineStart)
+	} else {
+		content += output.Content
+		if output.Truncated {
+			content += fmt.Sprintf("\n\n[截断: 显示第 %d-%d 行 / 共 %d 行]", output.LineStart, output.LineStart+output.LinesRead-1, output.Lines)
+		}
+	}
 
 	return &agent.ToolResult{
 		Content:  content,
@@ -380,14 +484,14 @@ func (t *FileReadToolWrapper) Execute(ctx context.Context, args map[string]inter
 }
 
 // formatContentWithLineNumbers 将文件内容格式化为带行号的纯文本
-func formatContentWithLineNumbers(content string, truncated bool, totalLines, linesRead int) string {
+func formatContentWithLineNumbers(content string, truncated bool, totalLines, linesRead, lineStart int) string {
 	lines := strings.Split(content, "\n")
 	var sb strings.Builder
 	for i, line := range lines {
-		sb.WriteString(fmt.Sprintf("%4d\t%s\n", i+1, line))
+		sb.WriteString(fmt.Sprintf("%4d\t%s\n", lineStart+i, line))
 	}
 	if truncated {
-		sb.WriteString(fmt.Sprintf("\n... (truncated, showing %d/%d lines)\n", linesRead, totalLines))
+		sb.WriteString(fmt.Sprintf("\n... (truncated, showing lines %d-%d/%d)\n", lineStart, lineStart+linesRead-1, totalLines))
 	}
 	return sb.String()
 }
