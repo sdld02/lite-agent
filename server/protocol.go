@@ -1,5 +1,7 @@
 package server
 
+import "encoding/json"
+
 // ============================================================================
 // WebSocket 消息协议定义
 // 采用 JSON 格式，按 type 字段区分消息类型
@@ -28,16 +30,17 @@ const (
 
 // ServerMessage 服务端发出的消息
 type ServerMessage struct {
-	Type           string        `json:"type"`
-	Content        string        `json:"content,omitempty"`          // 文本内容
-	ToolCall       *ToolCallMsg  `json:"tool_call,omitempty"`        // 工具调用信息
-	Result         string        `json:"result,omitempty"`           // 工具执行结果（精简文本，给 LLM 用）
-	ToolResultData interface{}   `json:"tool_result_data,omitempty"` // 工具富数据（完整结构体，给 UI 用）
-	Error          string        `json:"error,omitempty"`            // 错误信息
-	Response       string        `json:"response,omitempty"`         // 完整响应（done 时）
-	Session        *SessionInfo  `json:"session,omitempty"`          // 会话信息
-	Sessions       []SessionInfo `json:"sessions,omitempty"`         // 会话列表
-	Status         *StatusInfo   `json:"status,omitempty"`           // 服务状态
+	Type           string            `json:"type"`
+	Content        string            `json:"content,omitempty"`          // 文本内容
+	ToolCall       *ToolCallMsg      `json:"tool_call,omitempty"`        // 工具调用信息
+	Result         string            `json:"result,omitempty"`           // 工具执行结果（精简文本，给 LLM 用）
+	ToolResultData interface{}       `json:"tool_result_data,omitempty"` // 工具富数据（完整结构体，给 UI 用）
+	Error          string            `json:"error,omitempty"`            // 错误信息
+	Response       string            `json:"response,omitempty"`         // 完整响应（done 时）
+	Session        *SessionInfo      `json:"session,omitempty"`          // 会话信息
+	Sessions       []SessionInfo     `json:"sessions,omitempty"`         // 会话列表
+	Status         *StatusInfo       `json:"status,omitempty"`           // 服务状态
+	Messages       []json.RawMessage `json:"messages,omitempty"`         // 历史消息列表（session_loaded 时）
 }
 
 // 支持的服务端消息类型常量
@@ -50,6 +53,7 @@ const (
 	MsgTypeDone        = "done"         // 本轮对话完成
 	MsgTypeError       = "error"        // 错误
 	MsgTypeSessionInfo = "session_info" // 当前会话信息
+	MsgTypeSessionLoaded = "session_loaded" // 会话加载完成（含完整历史消息）
 	MsgTypeSessionList = "session_list" // 会话列表
 	MsgTypeStatus      = "status"       // 服务状态
 )

@@ -239,11 +239,8 @@ func (h *ConnectionHandler) handleLoadSession(sessionID string) {
 	h.sess = loaded
 	h.ag.SetMemory(loaded.Messages)
 
-	info := sessionMetaToInfo(h.sess.Meta())
-	h.sendMessage(ServerMessage{
-		Type:    MsgTypeSessionInfo,
-		Session: &info,
-	})
+	// 发送 session_loaded，包含完整历史消息
+	h.sendSessionLoaded()
 }
 
 // handleListSessions 列出所有会话
@@ -307,6 +304,28 @@ func (h *ConnectionHandler) sendConnected() {
 	h.sendMessage(ServerMessage{
 		Type:    MsgTypeConnected,
 		Session: &info,
+	})
+}
+
+// sendSessionLoaded 发送会话加载完成消息（含完整历史消息）
+func (h *ConnectionHandler) sendSessionLoaded() {
+	info := sessionMetaToInfo(h.sess.Meta())
+
+	// 序列化历史消息
+	messages := make([]json.RawMessage, 0, len(h.sess.Messages))
+	for _, msg := range h.sess.Messages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("序列化消息失败: %v", err)
+			continue
+		}
+		messages = append(messages, data)
+	}
+
+	h.sendMessage(ServerMessage{
+		Type:     MsgTypeSessionLoaded,
+		Session:  &info,
+		Messages: messages,
 	})
 }
 
