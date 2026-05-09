@@ -37,8 +37,14 @@ func (t *TaskListTool) Description() string {
 
 func (t *TaskListTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
+		"type": "object",
+		"properties": map[string]interface{}{
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查看所有待处理任务",
+			},
+		},
+		"required": []string{"intent"},
 	}
 }
 

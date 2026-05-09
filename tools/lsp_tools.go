@@ -86,8 +86,12 @@ func (t *LSPToolWrapper) Parameters() map[string]interface{} {
 				"type":        "integer",
 				"description": "字符偏移（1-based，与编辑器显示一致）",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查找 handleRequest 函数的定义位置",
+			},
 		},
-		"required": []string{"operation", "filePath", "line", "character"},
+		"required": []string{"operation", "filePath", "line", "character", "intent"},
 	}
 }
 

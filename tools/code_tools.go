@@ -53,8 +53,12 @@ func (t *CodeProbeToolWrapper) Parameters() map[string]interface{} {
 				"type":        "integer",
 				"description": "查询最近多少天的文件（仅 recent 模式有效），默认为 7",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查看项目整体结构",
+			},
 		},
-		"required": []string{"mode"},
+		"required": []string{"mode", "intent"},
 	}
 }
 
@@ -165,8 +169,12 @@ func (t *CodeStatsToolWrapper) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "排除的目录，逗号分隔，默认为 node_modules,.git,dist,build,vendor,__pycache__",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 统计项目代码行数",
+			},
 		},
-		"required": []string{},
+		"required": []string{"intent"},
 	}
 }
 

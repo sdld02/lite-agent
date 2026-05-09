@@ -36,8 +36,12 @@ func (t *CalculatorTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "数学表达式，如: 123+456",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 计算订单总额",
+			},
 		},
-		"required": []string{"expression"},
+		"required": []string{"expression", "intent"},
 	}
 }
 
@@ -359,8 +363,14 @@ func (t *SystemInfoTool) Description() string {
 
 func (t *SystemInfoTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
+		"type": "object",
+		"properties": map[string]interface{}{
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查看服务器操作系统和架构",
+			},
+		},
+		"required": []string{"intent"},
 	}
 }
 
@@ -393,8 +403,14 @@ func (t *TimeTool) Description() string {
 
 func (t *TimeTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
+		"type": "object",
+		"properties": map[string]interface{}{
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 获取当前时间用于日志记录",
+			},
+		},
+		"required": []string{"intent"},
 	}
 }
 

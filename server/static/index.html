@@ -129,9 +129,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   padding:8px 12px; display:flex; align-items:center; gap:8px; cursor:pointer;
   background:rgba(108,140,255,0.06); user-select:none;
 }
-.tool-card-header .tool-icon { font-size:15px; }
-.tool-card-header .tool-name { font-weight:600; color:var(--accent); font-family:var(--font-mono); font-size:12px; }
-.tool-card-header .tool-arrow { margin-left:auto; transition:transform 0.2s; color:var(--text-muted); }
+.tool-card-header .tool-icon { font-size:15px; flex-shrink:0; }
+.tool-card-header .tool-info { flex:1; min-width:0; display:flex; flex-wrap:wrap; align-items:baseline; gap:0 6px; }
+.tool-card-header .tool-name { font-weight:600; color:var(--accent); font-size:13px; white-space:nowrap; }
+.tool-card-header .tool-intent { color:var(--text-secondary); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tool-card-header .tool-arrow { flex-shrink:0; transition:transform 0.2s; color:var(--text-muted); }
 .tool-card.open .tool-card-header .tool-arrow { transform:rotate(180deg); }
 .tool-card-body { display:none; padding:10px 12px; }
 .tool-card.open .tool-card-body { display:block; }
@@ -302,6 +304,17 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     reconnectTimer: null
   };
 
+  // 工具英文名 → 中文名映射
+  var TOOL_NAMES_ZH = {
+    calculator: '计算器', system_info: '系统信息', current_time: '当前时间',
+    shell: '命令行', file_edit: '文件编辑', file_write: '文件写入',
+    file_diff: '文件对比', file_read: '文件读取',
+    code_probe: '代码探查', code_stats: '代码统计',
+    lsp: '代码智能', agent: '子Agent',
+    task_create: '创建任务', task_update: '更新任务',
+    task_list: '任务列表', task_get: '获取任务'
+  };
+
   // ========== HELPERS ==========
   function escHtml(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -439,9 +452,13 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           } else if (seg.type === 'text' && seg.content) {
             html += '<div class="bubble">' + renderMarkdown(seg.content) + '</div>';
           } else if (seg.type === 'tool_call') {
-            var openClass = seg.open ? ' open' : '';
-            html += '<div class="tool-card' + openClass + '" onclick="this.classList.toggle(\'open\')">';
-            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(seg.name) + '</span><span class="tool-arrow">▼</span></div>';
+            var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
+            var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
+            html += '<div class="tool-card" onclick="event.stopPropagation();this.classList.toggle(\'open\')">';
+            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span>';
+            html += '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
+            if (intent) html += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
+            html += '</div><span class="tool-arrow">▼</span></div>';
             html += '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div><pre>' + escHtml(JSON.stringify(seg.args, null, 2)) + '</pre>';
             if (seg.result !== undefined) {
               html += '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (seg.error ? 'error' : 'success') + '">' + escHtml(seg.result) + '</pre></div>';
@@ -457,9 +474,13 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         if (m.toolCalls && m.toolCalls.length > 0) {
           for (var t = 0; t < m.toolCalls.length; t++) {
             var tc = m.toolCalls[t];
-            var openClass = tc.open ? ' open' : '';
-            html += '<div class="tool-card' + openClass + '" onclick="this.classList.toggle(\'open\')">';
-            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(tc.name) + '</span><span class="tool-arrow">▼</span></div>';
+            var zhName = TOOL_NAMES_ZH[tc.name] || tc.name;
+            var intent = (tc.args && tc.args.intent) ? tc.args.intent : '';
+            html += '<div class="tool-card" onclick="event.stopPropagation();this.classList.toggle(\'open\')">';
+            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span>';
+            html += '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
+            if (intent) html += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
+            html += '</div><span class="tool-arrow">▼</span></div>';
             html += '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div><pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>';
             if (tc.result !== undefined) {
               html += '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (tc.error ? 'error' : 'success') + '">' + escHtml(tc.result) + '</pre></div>';
@@ -787,18 +808,23 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   function appendToolCall(tc) {
     var cur = ensureStreamMsg();
     if (!cur) return;
-    cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, open: true });
+    cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, open: false });
     // Track segment order
     if (!cur.segments) cur.segments = [];
-    cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, open: true });
-    // Real-time DOM: append tool card (open, with pending result)
+    cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, open: false });
+    // Real-time DOM: append tool card (collapsed by default, with intent)
     if (streamContainerEl) {
+      var zhName = TOOL_NAMES_ZH[tc.name] || tc.name;
+      var intent = (tc.args && tc.args.intent) ? tc.args.intent : '';
       var card = document.createElement('div');
-      card.className = 'tool-card open';
+      card.className = 'tool-card';
       card.setAttribute('data-tool-name', tc.name);
-      card.innerHTML = '<div class="tool-card-header" onclick="this.parentElement.classList.toggle(\'open\')">' +
-        '<span class="tool-icon">🔧</span><span class="tool-name">' + escHtml(tc.name) + '</span>' +
-        '<span class="tool-arrow">▼</span></div>' +
+      var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
+        '<span class="tool-icon">🔧</span>' +
+        '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
+      if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
+      headerHtml += '</div><span class="tool-arrow">▼</span></div>';
+      card.innerHTML = headerHtml +
         '<div class="tool-card-body">' +
         '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
         '<pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>' +

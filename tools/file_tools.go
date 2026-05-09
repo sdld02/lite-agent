@@ -55,8 +55,12 @@ func (t *FileEditToolWrapper) Parameters() map[string]interface{} {
 				"type":        "boolean",
 				"description": "是否替换所有匹配项，默认只替换第一个",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 修复 main.go 中的空指针异常",
+			},
 		},
-		"required": []string{"file_path", "old_string", "new_string"},
+		"required": []string{"file_path", "old_string", "new_string", "intent"},
 	}
 }
 
@@ -142,8 +146,12 @@ func (t *FileWriteToolWrapper) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "要写入的文件内容",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 创建配置文件 config.yaml",
+			},
 		},
-		"required": []string{"file_path", "content"},
+		"required": []string{"file_path", "content", "intent"},
 	}
 }
 
@@ -218,8 +226,12 @@ func (t *FileDiffToolWrapper) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "比较结果的格式，可选值有：unified, html, simple。默认 unified",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 对比修改前后的差异",
+			},
 		},
-		"required": []string{"file_path_a", "file_path_b"},
+		"required": []string{"file_path_a", "file_path_b", "intent"},
 	}
 }
 
@@ -307,8 +319,12 @@ func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "文件编码，默认utf-8",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查看 main.go 的内容以理解程序入口",
+			},
 		},
-		"required": []string{"file_path"},
+		"required": []string{"file_path", "intent"},
 	}
 }
 

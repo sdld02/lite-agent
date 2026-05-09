@@ -37,8 +37,12 @@ func (t *TaskGetTool) Parameters() map[string]interface{} {
 				"type":        "string",
 				"description": "要查询的任务 ID",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 查看任务详情以确认当前状态",
+			},
 		},
-		"required": []string{"taskId"},
+		"required": []string{"taskId", "intent"},
 	}
 }
 

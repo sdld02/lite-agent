@@ -92,8 +92,12 @@ func (t *AgentTool) Parameters() map[string]interface{} {
 				"description": "The type of specialized agent to use for this task",
 				"enum":        agentTypes,
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 启动 Explore Agent 搜索代码库",
+			},
 		},
-		"required": []string{"description", "prompt"},
+		"required": []string{"description", "prompt", "intent"},
 	}
 }
 

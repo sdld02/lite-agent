@@ -99,8 +99,12 @@ func (t *TaskUpdateTool) Parameters() map[string]interface{} {
 				"type":        "object",
 				"description": "合并到任务 metadata（设置 null 删除对应 key）",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 将任务标记为已完成",
+			},
 		},
-		"required": []string{"taskId"},
+		"required": []string{"taskId", "intent"},
 	}
 }
 

@@ -63,8 +63,12 @@ func (t *TaskCreateTool) Parameters() map[string]interface{} {
 				"type":        "object",
 				"description": "附加元数据（键值对），可选",
 			},
+			"intent": map[string]interface{}{
+				"type":        "string",
+				"description": "调用此工具的意图，如: 创建任务以跟踪重构进度",
+			},
 		},
-		"required": []string{"subject", "description"},
+		"required": []string{"subject", "description", "intent"},
 	}
 }
 
