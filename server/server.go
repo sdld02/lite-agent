@@ -13,6 +13,7 @@ import (
 	"lite-agent/agent"
 	"lite-agent/session"
 	agentpkg "lite-agent/tools/agent"
+	taskpkg "lite-agent/tools/task"
 
 	"github.com/gorilla/websocket"
 )
@@ -38,6 +39,9 @@ type Server struct {
 	// 工具工厂列表（用于为每个连接创建独立工具实例）
 	toolFactories []ToolFactory
 
+	// 任务管理器（用于按 session 查询任务列表）
+	taskMgr *taskpkg.Manager
+
 	// 连接管理
 	connMu   sync.RWMutex
 	conns    map[*ConnectionHandler]struct{}
@@ -49,7 +53,8 @@ type Server struct {
 
 // NewServer 创建 WebSocket 服务实例
 func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistry,
-	provider agent.LLMProvider, systemPrompt string, maxSteps int, toolFactories []ToolFactory) *Server {
+	provider agent.LLMProvider, systemPrompt string, maxSteps int, toolFactories []ToolFactory,
+	taskMgr *taskpkg.Manager) *Server {
 
 	return &Server{
 		addr:          addr,
@@ -60,6 +65,7 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 		maxSteps:      maxSteps,
 		maxConns:      20, // 默认最大连接数
 		toolFactories: toolFactories,
+		taskMgr:       taskMgr,
 		startTime:     time.Now(),
 		conns:         make(map[*ConnectionHandler]struct{}),
 		upgrader: websocket.Upgrader{

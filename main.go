@@ -226,7 +226,7 @@ func main() {
 	}
 
 	// 初始化任务管理器（多 Agent 支持的基础设施）
-	tools.InitTaskManager(homeDir)
+	taskMgr := tools.InitTaskManager(homeDir)
 
 	// 创建 Agent
 	ag := agent.NewAgent(providerCfg)
@@ -304,7 +304,7 @@ func main() {
 		}
 
 		// 创建 WebSocket 服务（注册表用于子 Agent 工具）
-		srv := server.NewServer(*serverAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories)
+		srv := server.NewServer(*serverAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories, taskMgr)
 
 		// 注册信号处理：优雅关闭
 		sigChan := make(chan os.Signal, 1)

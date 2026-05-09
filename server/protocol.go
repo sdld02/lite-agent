@@ -23,6 +23,7 @@ const (
 	MsgTypeLoadSession   = "load_session"   // 加载历史会话
 	MsgTypeListSessions  = "list_sessions"  // 列出所有会话
 	MsgTypeDeleteSession = "delete_session" // 删除会话
+	MsgTypeGetTasks      = "get_tasks"      // 获取当前会话的任务列表
 	MsgTypeGetStatus     = "get_status"     // 获取服务状态
 )
 
@@ -41,6 +42,7 @@ type ServerMessage struct {
 	Sessions       []SessionInfo     `json:"sessions,omitempty"`         // 会话列表
 	Status         *StatusInfo       `json:"status,omitempty"`           // 服务状态
 	Messages       []json.RawMessage `json:"messages,omitempty"`         // 历史消息列表（session_loaded 时）
+	Tasks          []TaskInfo        `json:"tasks,omitempty"`            // 任务列表（tasks 消息）
 }
 
 // 支持的服务端消息类型常量
@@ -55,6 +57,7 @@ const (
 	MsgTypeSessionInfo = "session_info" // 当前会话信息
 	MsgTypeSessionLoaded = "session_loaded" // 会话加载完成（含完整历史消息）
 	MsgTypeSessionList = "session_list" // 会话列表
+	MsgTypeTasks         = "tasks"          // 当前会话的任务列表
 	MsgTypeStatus      = "status"       // 服务状态
 )
 
@@ -78,6 +81,15 @@ type StatusInfo struct {
 	ActiveConnections int    `json:"active_connections"`
 	Uptime            string `json:"uptime"`
 	Version           string `json:"version"`
+}
+
+// TaskInfo 任务摘要（发送给客户端）
+type TaskInfo struct {
+	ID        string   `json:"id"`
+	Subject   string   `json:"subject"`
+	Status    string   `json:"status"`
+	Owner     string   `json:"owner,omitempty"`
+	BlockedBy []string `json:"blockedBy,omitempty"`
 }
 
 // ========== 辅助函数 ==========

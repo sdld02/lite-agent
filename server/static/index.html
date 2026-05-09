@@ -221,6 +221,88 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .modal-buttons .primary { background:var(--accent); color:#fff; border:none; }
 .modal-buttons .secondary { background:transparent; color:var(--text-secondary); border:1px solid var(--border); }
 
+
+#task-panel {
+  border-top: 2px solid var(--border);
+  max-height: 35%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.task-panel-header {
+  padding: 10px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.task-panel-header .task-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+#task-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  min-height: 0;
+}
+.task-item {
+  padding: 6px 10px;
+  margin: 1px 0;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.15s;
+  cursor: default;
+}
+.task-item:hover {
+  background: var(--surface-hover);
+}
+.task-status-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.task-status-icon.pending {
+  background: var(--text-muted);
+}
+.task-status-icon.in_progress {
+  background: var(--warning);
+  animation: pulse 1.5s infinite;
+}
+.task-status-icon.completed {
+  background: var(--success);
+}
+.task-item .task-info {
+  flex: 1;
+  min-width: 0;
+}
+.task-item .task-subject {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.task-item.completed .task-subject {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+.task-item .task-id {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
 @media (max-width:768px) {
   #sidebar { width:240px; min-width:240px; }
   .msg { max-width:92%; }
@@ -245,6 +327,15 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     </div>
     <div id="session-list">
       <div class="empty-state">暂无任务</div>
+    </div>
+    <div id="task-panel">
+      <div class="task-panel-header">
+        <span>📋 子任务</span>
+        <span class="task-count" id="task-count">0</span>
+      </div>
+      <div id="task-list">
+        <div class="empty-state" style="font-size:11px;padding:16px 0;">暂无子任务</div>
+      </div>
     </div>
   </div>
 
@@ -299,6 +390,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     serverUrl: localStorage.getItem('lite_agent_url') || 'ws://localhost:9090/ws',
     sessions: [],
     activeSessionId: null,
+    currentTasks: [],
     ws: null,
     streaming: false,
     reconnectTimer: null
@@ -345,6 +437,9 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     ensureConnected();
     // Tell server to start a fresh session
     sendWS({ type: 'new_session' });
+    // 清空任务列表
+    state.currentTasks = [];
+    renderTasks();
   };
 
   window.switchSession = function(id) {
@@ -368,6 +463,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         sendWS({ type: 'new_session' });
       }
     }
+    // 请求当前会话的任务列表
+    requestTasks();
   };
 
   window.deleteSession = function(id) {
@@ -410,6 +507,46 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   };
 
   // ========== RENDER ==========
+  // ========== TASK PANEL ==========
+  function requestTasks() {
+    sendWS({ type: 'get_tasks' });
+  }
+
+  function renderTasks() {
+    var tasks = state.currentTasks || [];
+    var list = document.getElementById('task-list');
+    var count = document.getElementById('task-count');
+    count.textContent = tasks.length;
+
+    // 统计各状态数量
+    var pending = 0, inProgress = 0, completed = 0;
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].status === 'pending') pending++;
+      else if (tasks[i].status === 'in_progress') inProgress++;
+      else if (tasks[i].status === 'completed') completed++;
+    }
+    count.title = '待处理:' + pending + ' 进行中:' + inProgress + ' 已完成:' + completed;
+
+    if (tasks.length === 0) {
+      list.innerHTML = '<div class="empty-state" style="font-size:11px;padding:16px 0;">暂无子任务</div>';
+    } else {
+      var html = '';
+      for (var i = 0; i < tasks.length; i++) {
+        var t = tasks[i];
+        var cls = 'task-item';
+        if (t.status === 'completed') cls += ' completed';
+        var iconCls = 'task-status-icon ' + t.status;
+        var iconTitle = t.status === 'pending' ? '待处理' : t.status === 'in_progress' ? '进行中' : '已完成';
+        html += '<div class="' + cls + '" title="' + escHtml(t.subject) + '">';
+        html += '<span class="' + iconCls + '" title="' + iconTitle + '"></span>';
+        html += '<div class="task-info"><div class="task-subject">' + escHtml(t.subject) + '</div></div>';
+        html += '<span class="task-id">#' + escHtml(t.id) + '</span>';
+        html += '</div>';
+      }
+      list.innerHTML = html;
+    }
+  }
+
   function renderSessions() {
     var list = document.getElementById('session-list');
     if (state.sessions.length === 0) {
@@ -728,6 +865,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             }
           }
         }
+        // 请求当前会话的任务列表
+        requestTasks();
         break;
       case 'content':
         appendContent(msg.content);
@@ -787,6 +926,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           s.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
           renderSessions();
           renderMessages();
+          // 加载完历史会话后，请求任务列表
+          requestTasks();
         }
         break;
       case 'session_list':
@@ -830,6 +971,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         if (msg.status) {
           document.getElementById('server-addr').textContent = msg.status.active_connections + ' 连接 · ' + msg.status.uptime;
         }
+        break;
+      case 'tasks':
+        // 收到当前会话的任务列表
+        state.currentTasks = msg.tasks || [];
+        renderTasks();
         break;
     }
   }

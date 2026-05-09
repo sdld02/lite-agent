@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -69,6 +70,9 @@ func newConnectionHandler(conn *websocket.Conn, srv *Server) *ConnectionHandler 
 		server:   srv,
 	}
 
+	// 设置初始 session ID 用于任务系统隔离
+	h.setSessionEnv()
+
 	// 设置工具调用观察者：将工具调用信息通过 WebSocket 推送
 	ag.SetToolObserver(func(toolName string, args map[string]interface{}, result *agent.ToolResult) {
 		if result == nil {
@@ -87,6 +91,11 @@ func newConnectionHandler(conn *websocket.Conn, srv *Server) *ConnectionHandler 
 				msg.ToolResultData = result.RichData
 			}
 			h.sendMessage(msg)
+
+			// 任务管理工具执行后，主动推送最新任务列表
+			if toolName == "task_create" || toolName == "task_update" || toolName == "task_list" {
+				h.pushTasks()
+			}
 		}
 	})
 
@@ -148,6 +157,8 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 		h.handleListSessions()
 	case MsgTypeDeleteSession:
 		h.handleDeleteSession(msg.SessionID)
+	case MsgTypeGetTasks:
+		h.handleGetTasks()
 	case MsgTypeGetStatus:
 		h.handleGetStatus()
 	default:
@@ -213,6 +224,9 @@ func (h *ConnectionHandler) handleNewSession() {
 	h.sess = session.NewSession()
 	h.ag.SetMemory(nil)
 
+	// 设置当前 session ID 用于任务系统隔离
+	h.setSessionEnv()
+
 	info := sessionMetaToInfo(h.sess.Meta())
 	h.sendMessage(ServerMessage{
 		Type:    MsgTypeSessionInfo,
@@ -238,6 +252,9 @@ func (h *ConnectionHandler) handleLoadSession(sessionID string) {
 
 	h.sess = loaded
 	h.ag.SetMemory(loaded.Messages)
+
+	// 设置当前 session ID 用于任务系统隔离
+	h.setSessionEnv()
 
 	// 发送 session_loaded，包含完整历史消息
 	h.sendSessionLoaded()
@@ -282,6 +299,93 @@ func (h *ConnectionHandler) handleDeleteSession(sessionID string) {
 	h.sendMessage(ServerMessage{
 		Type:   MsgTypeSessionInfo,
 		Result: fmt.Sprintf("已删除会话: %s", sessionID),
+	})
+}
+
+// handleGetTasks 返回当前会话的任务列表
+func (h *ConnectionHandler) handleGetTasks() {
+	taskMgr := h.server.taskMgr
+	if taskMgr == nil || taskMgr.Store == nil {
+		h.sendMessage(ServerMessage{
+			Type:  MsgTypeTasks,
+			Tasks: []TaskInfo{},
+		})
+		return
+	}
+
+	tasks, err := taskMgr.Store.List(h.sess.ID)
+	if err != nil {
+		h.sendError(fmt.Sprintf("读取任务列表失败: %v", err))
+		return
+	}
+
+	// 过滤 _internal metadata 的任务
+	var filtered []TaskInfo
+	for _, t := range tasks {
+		if t.Metadata != nil {
+			if _, ok := t.Metadata["_internal"]; ok {
+				continue
+			}
+		}
+		filtered = append(filtered, TaskInfo{
+			ID:        t.ID,
+			Subject:   t.Subject,
+			Status:    string(t.Status),
+			Owner:     t.Owner,
+			BlockedBy: t.BlockedBy,
+		})
+	}
+
+	if filtered == nil {
+		filtered = []TaskInfo{}
+	}
+
+	h.sendMessage(ServerMessage{
+		Type:  MsgTypeTasks,
+		Tasks: filtered,
+	})
+}
+
+// setSessionEnv 设置当前 session ID 到环境变量（用于任务系统隔离）
+func (h *ConnectionHandler) setSessionEnv() {
+	os.Setenv("LITE_SESSION_ID", h.sess.ID)
+}
+
+// pushTasks 主动推送当前会话的任务列表（由 ToolObserver 触发）
+func (h *ConnectionHandler) pushTasks() {
+	taskMgr := h.server.taskMgr
+	if taskMgr == nil || taskMgr.Store == nil {
+		return
+	}
+
+	tasks, err := taskMgr.Store.List(h.sess.ID)
+	if err != nil {
+		return
+	}
+
+	var filtered []TaskInfo
+	for _, t := range tasks {
+		if t.Metadata != nil {
+			if _, ok := t.Metadata["_internal"]; ok {
+				continue
+			}
+		}
+		filtered = append(filtered, TaskInfo{
+			ID:        t.ID,
+			Subject:   t.Subject,
+			Status:    string(t.Status),
+			Owner:     t.Owner,
+			BlockedBy: t.BlockedBy,
+		})
+	}
+
+	if filtered == nil {
+		filtered = []TaskInfo{}
+	}
+
+	h.sendMessage(ServerMessage{
+		Type:  MsgTypeTasks,
+		Tasks: filtered,
 	})
 }
 
