@@ -83,7 +83,7 @@ func (t *FileEditToolWrapper) Parameters() map[string]interface{} {
 			},
 			"intent": map[string]interface{}{
 				"type":        "string",
-				"description": "调用此工具的意图，如: 修复 main.go 中的空指针异常",
+				"description": "调用此工具的意图，如: 修复 main.go 中的空指针异常。必须说明要修改的文件的简短文件名（如 main.go）和具体修改内容",
 			},
 		},
 		"required": []string{"file_path", "old_string", "new_string", "intent"},
@@ -207,7 +207,7 @@ func (t *FileWriteToolWrapper) Parameters() map[string]interface{} {
 			},
 			"intent": map[string]interface{}{
 				"type":        "string",
-				"description": "调用此工具的意图，如: 创建配置文件 config.yaml",
+				"description": "调用此工具的意图，如: 创建配置文件 config.yaml。必须说明要创建的文件的简短文件名（如 config.yaml）和具体内容",
 			},
 		},
 		"required": []string{"file_path", "content", "intent"},
@@ -398,7 +398,7 @@ func (t *FileReadToolWrapper) Parameters() map[string]interface{} {
 			},
 			"intent": map[string]interface{}{
 				"type":        "string",
-				"description": "调用此工具的意图，如: 查看 main.go 的内容以理解程序入口",
+				"description": "调用此工具的意图，如: 查看 main.go 的内容以理解程序入口。必须说明要读取的文件的简短文件名（如 main.go）",
 			},
 		},
 		"required": []string{"file_path", "intent"},

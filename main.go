@@ -554,6 +554,7 @@ func main() {
 			lineCount := 1 // "🤖 Agent: " 占第一行
 			isFirstSegment := true
 			reasoningActive := false // 追踪 reasoning/content 阶段切换
+			progressActive := false  // 追踪进度行是否在显示
 
 			renderer, _ := glamour.NewTermRenderer(
 				glamour.WithAutoStyle(),
@@ -585,33 +586,65 @@ func main() {
 				lineCount = 0
 			}
 
-			response, err := ag.RunStream(ctx, input,
-				// onChunk: 正文片段（正常颜色）
-				func(chunk string) {
+			response, err := ag.RunStream(ctx, input, func(event agent.StreamEvent) {
+				switch event.Type {
+				case agent.EventContent:
+					if progressActive {
+						fmt.Print("\r\033[K")
+						progressActive = false
+					}
 					if reasoningActive {
 						fmt.Print(colorReset)
 						fmt.Println()
 						lineCount++
 						reasoningActive = false
 					}
-					fmt.Print(chunk)
-					lineCount += strings.Count(chunk, "\n")
-				},
-				// onReasoning: 推理片段（灰色输出）
-				func(chunk string) {
+					fmt.Print(event.Content)
+					lineCount += strings.Count(event.Content, "\n")
+				case agent.EventReasoning:
 					if !reasoningActive {
 						fmt.Print(colorGray)
 						reasoningActive = true
 					}
-					fmt.Print(chunk)
-					lineCount += strings.Count(chunk, "\n")
-				},
-				// onFlush: tool call 执行前，清屏+渲染当前累积内容
-				clearAndRender,
-			)
+					fmt.Print(event.Content)
+					lineCount += strings.Count(event.Content, "\n")
+				case agent.EventToolCallProgress:
+					progressActive = true
+					fmt.Printf("\r\033[K⏳ %s: 生成参数中... %.1fKB", event.ToolName, float64(event.ArgsBytes)/1024)
+				case agent.EventFlush:
+					if progressActive {
+						fmt.Print("\r\033[K")
+						progressActive = false
+					}
+					clearAndRender(event.Content)
+				case agent.EventToolCallStart:
+					if progressActive {
+						fmt.Print("\r\033[K")
+						progressActive = false
+					}
+					fmt.Printf("\n🔧 调用工具: %s\n", event.ToolName)
+					if event.ToolName == "shell" {
+						if intent, ok := event.ToolArgs["intent"]; ok {
+							fmt.Printf("   意图: %s\n", intent)
+						}
+						if cmd, ok := event.ToolArgs["command"]; ok {
+							fmt.Printf("   命令: %s\n", cmd)
+						}
+					}
+				case agent.EventToolCallEnd:
+					if event.ToolResult != nil && !event.ToolResult.IsError {
+						fmt.Printf("   ✅ 完成\n\n")
+					} else if event.ToolResult != nil {
+						fmt.Printf("   ❌ 错误: %s\n\n", event.ToolResult.Content)
+					}
+				}
+			})
 			if err != nil {
 				if reasoningActive {
 					fmt.Print(colorReset)
+				}
+				if progressActive {
+					fmt.Print("\r\033[K")
 				}
 				fmt.Printf("\n错误: %v\n", err)
 			} else {

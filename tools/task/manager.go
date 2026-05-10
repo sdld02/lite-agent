@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -71,18 +72,52 @@ func SetGlobalManager(mgr *Manager) {
 	}
 }
 
+// contextKey 用于 context 传递 session ID 的键类型
+type contextKey struct{}
+
+// ContextWithSessionID 将 session ID 注入 context（用于 server 模式多连接隔离）
+func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, contextKey{}, sessionID)
+}
+
+// SessionIDFromContext 从 context 中提取 session ID
+func SessionIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(contextKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
 // GetTaskListID 获取当前的任务列表 ID。
 // 优先级：
 //  1. LITE_TASK_LIST_ID 环境变量
 //  2. LITE_TEAM_NAME 环境变量（多 Agent 共享）
-//  3. LITE_SESSION_ID 环境变量
-//  4. "default"
+//  3. context 中的 session ID（server 模式并发安全）
+//  4. LITE_SESSION_ID 环境变量（CLI 模式兼容）
+//  5. "default"
 func (m *Manager) GetTaskListID() string {
 	if id := os.Getenv("LITE_TASK_LIST_ID"); id != "" {
 		return id
 	}
 	if m.TeamName != "" {
 		return m.TeamName
+	}
+	if id := os.Getenv("LITE_SESSION_ID"); id != "" {
+		return id
+	}
+	return "default"
+}
+
+// GetTaskListIDFromCtx 从 context 获取任务列表 ID（优先使用 context 中的 session ID）
+func (m *Manager) GetTaskListIDFromCtx(ctx context.Context) string {
+	if id := os.Getenv("LITE_TASK_LIST_ID"); id != "" {
+		return id
+	}
+	if m.TeamName != "" {
+		return m.TeamName
+	}
+	if id := SessionIDFromContext(ctx); id != "" {
+		return id
 	}
 	if id := os.Getenv("LITE_SESSION_ID"); id != "" {
 		return id

@@ -5,30 +5,52 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"lite-agent/agent"
 	"lite-agent/session"
 	agentpkg "lite-agent/tools/agent"
+	"lite-agent/tools/task"
 
 	"github.com/gorilla/websocket"
 )
 
+// SessionRunner 封装单个 session 的独立运行状态
+// 每个 session 拥有独立的 Agent 实例、context 和运行标志
+type SessionRunner struct {
+	sess   *session.Session
+	ag     *agent.Agent
+	mu     sync.Mutex // 保护 ctx/cancel 的并发访问
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	running atomic.Bool // 是否正在执行 handleChat
+}
+
+// outMsg 表示一条待发送的 WebSocket 消息
+type outMsg struct {
+	msgType int    // websocket.TextMessage 或 websocket.PingMessage
+	data    []byte // 消息数据
+}
+
 // ConnectionHandler 管理单个 WebSocket 连接
-// 每个连接拥有独立的 Agent 实例和会话状态
+// 支持多个 session 并发执行
 type ConnectionHandler struct {
 	conn     *websocket.Conn
-	ag       *agent.Agent
 	store    *session.Store
-	sess     *session.Session
 	registry *agentpkg.ToolRegistry
 	provider agent.LLMProvider
-	writeMu  sync.Mutex // 写锁，防止并发写入 WebSocket
+	outChan  chan outMsg // 写队列，所有 WebSocket 写入通过此 channel 序列化
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// 多 session 并发支持
+	runners   map[string]*SessionRunner // key = server session ID
+	runnersMu sync.RWMutex
+	activeSessionID string // 当前聚焦的 session ID
 
 	// 服务引用（用于状态查询等）
 	server *Server
@@ -38,75 +60,89 @@ type ConnectionHandler struct {
 func newConnectionHandler(conn *websocket.Conn, srv *Server) *ConnectionHandler {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// 为每个连接创建独立的 Agent
-	ag := agent.NewAgent(srv.provider)
-	ag.SetSystemPrompt(srv.systemPrompt)
-	ag.SetMaxSteps(srv.maxSteps)
-
-	// 注册工具
-	for _, toolFactory := range srv.toolFactories {
-		ag.AddTool(toolFactory())
+	h := &ConnectionHandler{
+		conn:    conn,
+		store:   srv.store,
+		registry: srv.registry,
+		provider: srv.provider,
+		outChan: make(chan outMsg, 512), // 缓冲队列，解耦消息生产与 WebSocket 写入
+		ctx:     ctx,
+		cancel:  cancel,
+		runners: make(map[string]*SessionRunner),
+		server:  srv,
 	}
 
 	// 恢复最新会话
-	var sess *session.Session
 	latest, err := srv.store.Latest()
 	if err == nil && latest != nil {
-		sess = latest
-		ag.SetMemory(sess.Messages)
+		runner := h.createRunner(latest)
+		h.runners[latest.ID] = runner
+		h.activeSessionID = latest.ID
 	} else {
-		sess = session.NewSession()
+		sess := session.NewSession()
+		runner := h.createRunner(sess)
+		h.runners[sess.ID] = runner
+		h.activeSessionID = sess.ID
 	}
-
-	h := &ConnectionHandler{
-		conn:     conn,
-		ag:       ag,
-		store:    srv.store,
-		sess:     sess,
-		registry: srv.registry,
-		provider: srv.provider,
-		ctx:      ctx,
-		cancel:   cancel,
-		server:   srv,
-	}
-
-	// 设置初始 session ID 用于任务系统隔离
-	h.setSessionEnv()
-
-	// 设置工具调用观察者：将工具调用信息通过 WebSocket 推送
-	ag.SetToolObserver(func(toolName string, args map[string]interface{}, result *agent.ToolResult) {
-		if result == nil {
-			// 工具调用开始（执行前通知）
-			h.sendMessage(ServerMessage{
-				Type:     MsgTypeToolCall,
-				ToolCall: &ToolCallMsg{Name: toolName, Args: args},
-			})
-		} else {
-			// 工具调用结束（结果通知）
-			msg := ServerMessage{
-				Type:   MsgTypeToolResult,
-				Result: result.Content,
-			}
-			if result.RichData != nil {
-				msg.ToolResultData = result.RichData
-			}
-			h.sendMessage(msg)
-
-			// 任务管理工具执行后，主动推送最新任务列表
-			if toolName == "task_create" || toolName == "task_update" || toolName == "task_list" {
-				h.pushTasks()
-			}
-		}
-	})
 
 	return h
 }
 
+// createRunner 创建一个新的 SessionRunner（初始化 Agent、注册工具、设置 memory）
+func (h *ConnectionHandler) createRunner(sess *session.Session) *SessionRunner {
+	ctx, cancel := context.WithCancel(h.ctx)
+
+	ag := agent.NewAgent(h.provider)
+	ag.SetSystemPrompt(h.server.systemPrompt)
+	ag.SetMaxSteps(h.server.maxSteps)
+
+	// 注册工具
+	for _, toolFactory := range h.server.toolFactories {
+		ag.AddTool(toolFactory())
+	}
+
+	// 恢复 memory
+	if len(sess.Messages) > 0 {
+		ag.SetMemory(sess.Messages)
+	}
+
+	return &SessionRunner{
+		sess:   sess,
+		ag:     ag,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// getRunner 获取指定 session ID 的 runner（线程安全）
+func (h *ConnectionHandler) getRunner(sessionID string) *SessionRunner {
+	h.runnersMu.RLock()
+	defer h.runnersMu.RUnlock()
+	return h.runners[sessionID]
+}
+
+// getActiveRunner 获取当前聚焦 session 的 runner
+func (h *ConnectionHandler) getActiveRunner() *SessionRunner {
+	h.runnersMu.RLock()
+	defer h.runnersMu.RUnlock()
+	return h.runners[h.activeSessionID]
+}
+
 // Run 启动消息循环（阻塞）
 func (h *ConnectionHandler) Run() {
+	// 启动专用写入 goroutine
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		h.writeLoop()
+	}()
+
 	defer func() {
-		h.saveSession()
-		h.cancel()
+		h.saveAllSessions()
+		h.cancelAllRunners()
+		h.cancel()         // 通知所有 goroutine 停止（heartbeat 等）
+		close(h.outChan)   // 关闭写队列，writeLoop 退出
+		<-writerDone       // 等待 writeLoop 完成，确保所有排队消息已写入
 		h.conn.Close()
 		h.server.removeConnection(h)
 	}()
@@ -136,7 +172,7 @@ func (h *ConnectionHandler) Run() {
 
 		var clientMsg ClientMessage
 		if err := json.Unmarshal(rawMsg, &clientMsg); err != nil {
-			h.sendError("消息格式无效，请使用 JSON: " + err.Error())
+			h.sendError("", "消息格式无效，请使用 JSON: "+err.Error())
 			continue
 		}
 
@@ -148,9 +184,9 @@ func (h *ConnectionHandler) Run() {
 func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 	switch msg.Type {
 	case MsgTypeChat:
-		h.handleChat(msg.Content)
+		h.handleChat(msg.SessionID, msg.Content)
 	case MsgTypeNewSession:
-		h.handleNewSession()
+		h.handleNewSession(msg.SessionID)
 	case MsgTypeLoadSession:
 		h.handleLoadSession(msg.SessionID)
 	case MsgTypeListSessions:
@@ -158,57 +194,102 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 	case MsgTypeDeleteSession:
 		h.handleDeleteSession(msg.SessionID)
 	case MsgTypeGetTasks:
-		h.handleGetTasks()
+		h.handleGetTasks(msg.SessionID)
 	case MsgTypeGetStatus:
 		h.handleGetStatus()
+	case MsgTypeCancel:
+		h.handleCancel(msg.SessionID)
 	default:
-		h.sendError("未知消息类型: " + msg.Type)
+		h.sendError("", "未知消息类型: "+msg.Type)
 	}
 }
 
-// handleChat 处理对话消息
-func (h *ConnectionHandler) handleChat(content string) {
+// handleChat 处理对话消息（异步执行）
+func (h *ConnectionHandler) handleChat(sessionID string, content string) {
 	if content == "" {
-		h.sendError("消息内容不能为空")
+		h.sendError(sessionID, "消息内容不能为空")
 		return
 	}
 
-	// 使用独立的 context，可在连接关闭时取消
-	ctx := h.ctx
+	// 确定目标 session ID
+	if sessionID == "" {
+		sessionID = h.activeSessionID
+	}
 
-	response, err := h.ag.RunStream(ctx, content,
-		// onChunk: 正文流式推送
-		func(chunk string) {
-			h.sendMessage(ServerMessage{
-				Type:    MsgTypeContent,
-				Content: chunk,
+	runner := h.getRunner(sessionID)
+	if runner == nil {
+		h.sendError(sessionID, "会话不存在: "+sessionID)
+		return
+	}
+
+	// 原子性检查并设置 running 标志，防止同一 session 重复请求
+	if !runner.running.CompareAndSwap(false, true) {
+		h.sendError(sessionID, "该会话正在执行中，请等待完成或取消")
+		return
+	}
+
+	// 异步执行 Agent
+	go h.runChat(runner, content)
+}
+
+// runChat 在 goroutine 中执行 Agent 对话（实际执行逻辑）
+func (h *ConnectionHandler) runChat(runner *SessionRunner, content string) {
+	defer runner.running.Store(false)
+
+	sessionID := runner.sess.ID
+
+	runner.mu.Lock()
+	ctx := task.ContextWithSessionID(runner.ctx, sessionID)
+	runner.mu.Unlock()
+
+	response, err := runner.ag.RunStream(ctx, content, func(event agent.StreamEvent) {
+		switch event.Type {
+		case agent.EventContent:
+			h.sendSessionMessage(sessionID, ServerMessage{Type: MsgTypeContent, Content: event.Content})
+		case agent.EventReasoning:
+			h.sendSessionMessage(sessionID, ServerMessage{Type: MsgTypeReasoning, Content: event.Content})
+		case agent.EventToolCallProgress:
+			h.sendSessionMessage(sessionID, ServerMessage{
+				Type:             MsgTypeToolCallProgress,
+				ToolCallProgress: &ToolCallProgressMsg{Name: event.ToolName, ArgsBytes: event.ArgsBytes},
 			})
-		},
-		// onReasoning: 推理内容流式推送
-		func(chunk string) {
-			h.sendMessage(ServerMessage{
-				Type:    MsgTypeReasoning,
-				Content: chunk,
+		case agent.EventToolCallStart:
+			h.sendSessionMessage(sessionID, ServerMessage{
+				Type:     MsgTypeToolCall,
+				ToolCall: &ToolCallMsg{Name: event.ToolName, Args: event.ToolArgs},
 			})
-		},
-		// onFlush: 工具调用前的刷新（WebSocket 模式无需清屏）
-		nil,
-	)
+		case agent.EventToolCallEnd:
+			msg := ServerMessage{Type: MsgTypeToolResult, Result: event.ToolResult.Content}
+			if event.ToolResult.RichData != nil {
+				msg.ToolResultData = event.ToolResult.RichData
+			}
+			h.sendSessionMessage(sessionID, msg)
+			// 任务管理工具执行后，主动推送最新任务列表
+			if event.ToolName == "task_create" || event.ToolName == "task_update" || event.ToolName == "task_list" {
+				h.pushTasks(sessionID)
+			}
+		case agent.EventFlush:
+			// WebSocket 模式无需清屏
+		}
+	})
 
 	if err != nil {
-		h.sendError(fmt.Sprintf("Agent 执行失败: %v", err))
+		h.sendSessionMessage(sessionID, ServerMessage{
+			Type:  MsgTypeError,
+			Error: fmt.Sprintf("Agent 执行失败: %v", err),
+		})
 		return
 	}
 
 	// 自动保存会话
-	h.sess.SetMessages(h.ag.GetMemory())
-	if err := h.store.Save(h.sess); err != nil {
+	runner.sess.SetMessages(runner.ag.GetMemory())
+	if err := h.store.Save(runner.sess); err != nil {
 		log.Printf("保存会话失败: %v", err)
 	}
 
 	// 发送完成消息
-	info := sessionMetaToInfo(h.sess.Meta())
-	h.sendMessage(ServerMessage{
+	info := sessionMetaToInfo(runner.sess.Meta())
+	h.sendSessionMessage(sessionID, ServerMessage{
 		Type:     MsgTypeDone,
 		Response: response,
 		Session:  &info,
@@ -216,55 +297,75 @@ func (h *ConnectionHandler) handleChat(content string) {
 }
 
 // handleNewSession 创建新会话
-func (h *ConnectionHandler) handleNewSession() {
-	// 保存当前会话
-	h.saveSession()
+func (h *ConnectionHandler) handleNewSession(clientSessionID string) {
+	// 保存当前聚焦 session
+	if runner := h.getActiveRunner(); runner != nil {
+		h.saveRunnerSession(runner)
+	}
 
-	// 创建新会话
-	h.sess = session.NewSession()
-	h.ag.SetMemory(nil)
+	// 创建新会话和 runner
+	sess := session.NewSession()
+	runner := h.createRunner(sess)
 
-	// 设置当前 session ID 用于任务系统隔离
-	h.setSessionEnv()
+	h.runnersMu.Lock()
+	h.runners[sess.ID] = runner
+	h.activeSessionID = sess.ID
+	h.runnersMu.Unlock()
 
-	info := sessionMetaToInfo(h.sess.Meta())
-	h.sendMessage(ServerMessage{
-		Type:    MsgTypeSessionInfo,
-		Session: &info,
+	log.Printf("[handleNewSession] server_id=%s, client_id=%s", sess.ID, clientSessionID)
+
+	info := sessionMetaToInfo(sess.Meta())
+	h.sendSessionMessage(sess.ID, ServerMessage{
+		Type:            MsgTypeSessionInfo,
+		Session:         &info,
+		ClientSessionID: clientSessionID, // 回传客户端 session ID，用于精确关联
 	})
 }
 
 // handleLoadSession 加载历史会话
 func (h *ConnectionHandler) handleLoadSession(sessionID string) {
 	if sessionID == "" {
-		h.sendError("session_id 不能为空")
+		h.sendError("", "session_id 不能为空")
 		return
 	}
 
-	// 保存当前会话
-	h.saveSession()
+	// 保存当前聚焦 session
+	if runner := h.getActiveRunner(); runner != nil {
+		h.saveRunnerSession(runner)
+	}
 
+	// 检查是否已有 runner
+	existing := h.getRunner(sessionID)
+	if existing != nil {
+		// 已有 runner，直接切换焦点
+		h.runnersMu.Lock()
+		h.activeSessionID = sessionID
+		h.runnersMu.Unlock()
+		h.sendSessionLoaded(existing)
+		return
+	}
+
+	// 从 store 加载
 	loaded, err := h.store.Load(sessionID)
 	if err != nil {
-		h.sendError(fmt.Sprintf("加载会话失败: %v", err))
+		h.sendError(sessionID, fmt.Sprintf("加载会话失败: %v", err))
 		return
 	}
 
-	h.sess = loaded
-	h.ag.SetMemory(loaded.Messages)
+	runner := h.createRunner(loaded)
+	h.runnersMu.Lock()
+	h.runners[sessionID] = runner
+	h.activeSessionID = sessionID
+	h.runnersMu.Unlock()
 
-	// 设置当前 session ID 用于任务系统隔离
-	h.setSessionEnv()
-
-	// 发送 session_loaded，包含完整历史消息
-	h.sendSessionLoaded()
+	h.sendSessionLoaded(runner)
 }
 
 // handleListSessions 列出所有会话
 func (h *ConnectionHandler) handleListSessions() {
 	metas, err := h.store.List()
 	if err != nil {
-		h.sendError(fmt.Sprintf("读取会话列表失败: %v", err))
+		h.sendError("", fmt.Sprintf("读取会话列表失败: %v", err))
 		return
 	}
 
@@ -282,111 +383,87 @@ func (h *ConnectionHandler) handleListSessions() {
 // handleDeleteSession 删除会话
 func (h *ConnectionHandler) handleDeleteSession(sessionID string) {
 	if sessionID == "" {
-		h.sendError("session_id 不能为空")
+		h.sendError("", "session_id 不能为空")
 		return
 	}
 
-	if sessionID == h.sess.ID {
-		h.sendError("不能删除当前正在使用的会话")
+	if sessionID == h.activeSessionID {
+		h.sendError(sessionID, "不能删除当前正在使用的会话")
 		return
 	}
+
+	// 如果有对应 runner，先取消并移除
+	h.runnersMu.Lock()
+	if runner, ok := h.runners[sessionID]; ok {
+		runner.cancel()
+		delete(h.runners, sessionID)
+	}
+	h.runnersMu.Unlock()
 
 	if err := h.store.Delete(sessionID); err != nil {
-		h.sendError(fmt.Sprintf("删除会话失败: %v", err))
+		h.sendError(sessionID, fmt.Sprintf("删除会话失败: %v", err))
 		return
 	}
 
-	h.sendMessage(ServerMessage{
+	h.sendSessionMessage(sessionID, ServerMessage{
 		Type:   MsgTypeSessionInfo,
 		Result: fmt.Sprintf("已删除会话: %s", sessionID),
 	})
 }
 
-// handleGetTasks 返回当前会话的任务列表
-func (h *ConnectionHandler) handleGetTasks() {
+// handleGetTasks 返回指定会话的任务列表
+func (h *ConnectionHandler) handleGetTasks(sessionID string) {
+	if sessionID == "" {
+		sessionID = h.activeSessionID
+	}
+
 	taskMgr := h.server.taskMgr
 	if taskMgr == nil || taskMgr.Store == nil {
-		h.sendMessage(ServerMessage{
+		h.sendSessionMessage(sessionID, ServerMessage{
 			Type:  MsgTypeTasks,
 			Tasks: []TaskInfo{},
 		})
 		return
 	}
 
-	tasks, err := taskMgr.Store.List(h.sess.ID)
+	tasks, err := taskMgr.Store.List(sessionID)
 	if err != nil {
-		h.sendError(fmt.Sprintf("读取任务列表失败: %v", err))
+		h.sendError(sessionID, fmt.Sprintf("读取任务列表失败: %v", err))
 		return
 	}
 
-	// 过滤 _internal metadata 的任务
-	var filtered []TaskInfo
-	for _, t := range tasks {
-		if t.Metadata != nil {
-			if _, ok := t.Metadata["_internal"]; ok {
-				continue
-			}
-		}
-		filtered = append(filtered, TaskInfo{
-			ID:        t.ID,
-			Subject:   t.Subject,
-			Status:    string(t.Status),
-			Owner:     t.Owner,
-			BlockedBy: t.BlockedBy,
-		})
-	}
-
-	if filtered == nil {
-		filtered = []TaskInfo{}
-	}
-
-	h.sendMessage(ServerMessage{
+	filtered := filterTasks(tasks)
+	h.sendSessionMessage(sessionID, ServerMessage{
 		Type:  MsgTypeTasks,
 		Tasks: filtered,
 	})
 }
 
-// setSessionEnv 设置当前 session ID 到环境变量（用于任务系统隔离）
-func (h *ConnectionHandler) setSessionEnv() {
-	os.Setenv("LITE_SESSION_ID", h.sess.ID)
-}
+// handleCancel 取消指定 session 的执行
+func (h *ConnectionHandler) handleCancel(sessionID string) {
+	if sessionID == "" {
+		sessionID = h.activeSessionID
+	}
 
-// pushTasks 主动推送当前会话的任务列表（由 ToolObserver 触发）
-func (h *ConnectionHandler) pushTasks() {
-	taskMgr := h.server.taskMgr
-	if taskMgr == nil || taskMgr.Store == nil {
+	runner := h.getRunner(sessionID)
+	if runner == nil {
+		h.sendError(sessionID, "会话不存在: "+sessionID)
 		return
 	}
 
-	tasks, err := taskMgr.Store.List(h.sess.ID)
-	if err != nil {
+	if !runner.running.Load() {
+		h.sendError(sessionID, "该会话当前没有在执行任务")
 		return
 	}
 
-	var filtered []TaskInfo
-	for _, t := range tasks {
-		if t.Metadata != nil {
-			if _, ok := t.Metadata["_internal"]; ok {
-				continue
-			}
-		}
-		filtered = append(filtered, TaskInfo{
-			ID:        t.ID,
-			Subject:   t.Subject,
-			Status:    string(t.Status),
-			Owner:     t.Owner,
-			BlockedBy: t.BlockedBy,
-		})
-	}
-
-	if filtered == nil {
-		filtered = []TaskInfo{}
-	}
-
-	h.sendMessage(ServerMessage{
-		Type:  MsgTypeTasks,
-		Tasks: filtered,
-	})
+	// 取消当前 context，Agent.RunStream 会通过 ctx 感知取消
+	runner.mu.Lock()
+	runner.cancel()
+	// 重建 runner 的 context（以便后续继续使用该 session）
+	newCtx, newCancel := context.WithCancel(h.ctx)
+	runner.ctx = newCtx
+	runner.cancel = newCancel
+	runner.mu.Unlock()
 }
 
 // handleGetStatus 返回服务状态
@@ -402,22 +479,47 @@ func (h *ConnectionHandler) handleGetStatus() {
 	})
 }
 
+// pushTasks 主动推送指定会话的任务列表
+func (h *ConnectionHandler) pushTasks(sessionID string) {
+	taskMgr := h.server.taskMgr
+	if taskMgr == nil || taskMgr.Store == nil {
+		return
+	}
+
+	tasks, err := taskMgr.Store.List(sessionID)
+	if err != nil {
+		return
+	}
+
+	filtered := filterTasks(tasks)
+	h.sendSessionMessage(sessionID, ServerMessage{
+		Type:  MsgTypeTasks,
+		Tasks: filtered,
+	})
+}
+
 // sendConnected 发送连接建立确认
 func (h *ConnectionHandler) sendConnected() {
-	info := sessionMetaToInfo(h.sess.Meta())
-	h.sendMessage(ServerMessage{
+	runner := h.getActiveRunner()
+	if runner == nil {
+		h.sendMessage(ServerMessage{Type: MsgTypeConnected})
+		return
+	}
+	info := sessionMetaToInfo(runner.sess.Meta())
+	h.sendSessionMessage(runner.sess.ID, ServerMessage{
 		Type:    MsgTypeConnected,
 		Session: &info,
 	})
 }
 
 // sendSessionLoaded 发送会话加载完成消息（含完整历史消息）
-func (h *ConnectionHandler) sendSessionLoaded() {
-	info := sessionMetaToInfo(h.sess.Meta())
+func (h *ConnectionHandler) sendSessionLoaded(runner *SessionRunner) {
+	info := sessionMetaToInfo(runner.sess.Meta())
+	sessionID := runner.sess.ID
 
 	// 序列化历史消息
-	messages := make([]json.RawMessage, 0, len(h.sess.Messages))
-	for _, msg := range h.sess.Messages {
+	messages := make([]json.RawMessage, 0, len(runner.sess.Messages))
+	for _, msg := range runner.sess.Messages {
 		data, err := json.Marshal(msg)
 		if err != nil {
 			log.Printf("序列化消息失败: %v", err)
@@ -426,22 +528,29 @@ func (h *ConnectionHandler) sendSessionLoaded() {
 		messages = append(messages, data)
 	}
 
-	h.sendMessage(ServerMessage{
+	h.sendSessionMessage(sessionID, ServerMessage{
 		Type:     MsgTypeSessionLoaded,
 		Session:  &info,
 		Messages: messages,
 	})
 }
 
-// sendError 发送错误消息
-func (h *ConnectionHandler) sendError(errMsg string) {
-	h.sendMessage(ServerMessage{
+// sendError 发送错误消息（带 session_id）
+func (h *ConnectionHandler) sendError(sessionID string, errMsg string) {
+	h.sendSessionMessage(sessionID, ServerMessage{
 		Type:  MsgTypeError,
 		Error: errMsg,
 	})
 }
 
-// sendMessage 线程安全地发送 JSON 消息到 WebSocket
+// sendSessionMessage 发送携带 session_id 的消息
+func (h *ConnectionHandler) sendSessionMessage(sessionID string, msg ServerMessage) {
+	msg.SessionID = sessionID
+	h.sendMessage(msg)
+}
+
+// sendMessage 将消息推入写队列（非阻塞，不直接写 WebSocket）
+// 多个 goroutine 可并发调用而不会相互阻塞
 func (h *ConnectionHandler) sendMessage(msg ServerMessage) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -449,24 +558,57 @@ func (h *ConnectionHandler) sendMessage(msg ServerMessage) {
 		return
 	}
 
-	h.writeMu.Lock()
-	defer h.writeMu.Unlock()
-
-	h.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	if err := h.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		log.Printf("WebSocket 写入失败: %v", err)
+	select {
+	case h.outChan <- outMsg{msgType: websocket.TextMessage, data: data}:
+	case <-h.ctx.Done():
+		// 连接正在关闭，丢弃消息
 	}
 }
 
-// saveSession 保存当前会话
-func (h *ConnectionHandler) saveSession() {
-	h.sess.SetMessages(h.ag.GetMemory())
-	if err := h.store.Save(h.sess); err != nil {
+// writeLoop 专用写入 goroutine：从 channel 读取消息并写入 WebSocket
+// 所有 WebSocket 写操作都通过此 goroutine 序列化，无需互斥锁
+func (h *ConnectionHandler) writeLoop() {
+	for msg := range h.outChan {
+		h.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := h.conn.WriteMessage(msg.msgType, msg.data); err != nil {
+			log.Printf("WebSocket 写入失败: %v", err)
+			return
+		}
+	}
+}
+
+// saveRunnerSession 保存指定 runner 的会话
+func (h *ConnectionHandler) saveRunnerSession(runner *SessionRunner) {
+	runner.sess.SetMessages(runner.ag.GetMemory())
+	if err := h.store.Save(runner.sess); err != nil {
 		log.Printf("保存会话失败: %v", err)
 	}
 }
 
-// heartbeat 心跳维护
+// saveAllSessions 保存所有 runner 的会话
+func (h *ConnectionHandler) saveAllSessions() {
+	h.runnersMu.RLock()
+	defer h.runnersMu.RUnlock()
+	for _, runner := range h.runners {
+		runner.sess.SetMessages(runner.ag.GetMemory())
+		if err := h.store.Save(runner.sess); err != nil {
+			log.Printf("保存会话失败: %v", err)
+		}
+	}
+}
+
+// cancelAllRunners 取消所有 runner 的 context
+func (h *ConnectionHandler) cancelAllRunners() {
+	h.runnersMu.RLock()
+	defer h.runnersMu.RUnlock()
+	for _, runner := range h.runners {
+		runner.mu.Lock()
+		runner.cancel()
+		runner.mu.Unlock()
+	}
+}
+
+// heartbeat 心跳维护（通过写队列发送 ping）
 func (h *ConnectionHandler) heartbeat() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -474,17 +616,38 @@ func (h *ConnectionHandler) heartbeat() {
 	for {
 		select {
 		case <-ticker.C:
-			h.writeMu.Lock()
-			h.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := h.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				h.writeMu.Unlock()
+			select {
+			case h.outChan <- outMsg{msgType: websocket.PingMessage, data: nil}:
+			case <-h.ctx.Done():
 				return
 			}
-			h.writeMu.Unlock()
 		case <-h.ctx.Done():
 			return
 		}
 	}
+}
+
+// filterTasks 过滤 _internal metadata 的任务并转换格式
+func filterTasks(tasks []task.Task) []TaskInfo {
+	var filtered []TaskInfo
+	for _, t := range tasks {
+		if t.Metadata != nil {
+			if _, ok := t.Metadata["_internal"]; ok {
+				continue
+			}
+		}
+		filtered = append(filtered, TaskInfo{
+			ID:        t.ID,
+			Subject:   t.Subject,
+			Status:    string(t.Status),
+			Owner:     t.Owner,
+			BlockedBy: t.BlockedBy,
+		})
+	}
+	if filtered == nil {
+		filtered = []TaskInfo{}
+	}
+	return filtered
 }
 
 // sessionMetaToInfo 将 session.Meta 转换为 SessionInfo

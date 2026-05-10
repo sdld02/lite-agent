@@ -65,29 +65,40 @@ type LLMProvider interface {
 	Chat(ctx context.Context, messages []Message, tools []ToolDefinition) (*Message, error)
 }
 
-// StreamCallback 流式输出回调，每收到一个文本片段时调用
-type StreamCallback func(chunk string)
+// ============================================================================
+// 统一流事件模型
+// ============================================================================
 
-// StreamFlushCallback 流式渲染刷新回调，在 tool call 执行前调用
-// content 为当前轮次累积的文本内容，调用方可据此做清屏+渲染
-type StreamFlushCallback func(content string)
+// StreamEventType 流事件类型
+type StreamEventType int
+
+const (
+	EventContent          StreamEventType = iota // 正文文本片段
+	EventReasoning                               // 推理内容片段
+	EventToolCallProgress                        // 工具调用参数生成进度（LLM 正在生成参数）
+	EventFlush                                   // tool call 前的文本刷新通知
+	EventToolCallStart                           // 工具开始执行
+	EventToolCallEnd                             // 工具执行完毕
+)
+
+// StreamEvent 统一流事件
+type StreamEvent struct {
+	Type       StreamEventType
+	Content    string                 // EventContent/EventReasoning/EventFlush: 文本内容
+	ToolName   string                 // EventToolCallProgress/Start/End: 工具名称
+	ArgsBytes  int                    // EventToolCallProgress: 已接收参数字节数
+	ToolArgs   map[string]interface{} // EventToolCallStart/End: 工具参数
+	ToolResult *ToolResult            // EventToolCallEnd: 工具执行结果
+}
+
+// StreamEventHandler 统一流事件处理回调
+type StreamEventHandler func(event StreamEvent)
 
 // StreamProvider 支持流式输出的 LLM 提供者接口
 type StreamProvider interface {
 	LLMProvider
-	// ChatStream 流式发送消息，通过回调实时返回文本片段，最终返回完整的 Message（含 tool_calls）
-	ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, callback StreamCallback) (*Message, error)
-}
-
-// ReasoningCallback 推理内容流式回调，每收到一个推理片段时调用
-type ReasoningCallback func(chunk string)
-
-// ReasoningStreamProvider 支持推理输出的流式 LLM 提供者接口
-type ReasoningStreamProvider interface {
-	StreamProvider
-	// ChatStreamReasoning 流式发送消息，通过双回调分别返回推理和正文片段
-	ChatStreamReasoning(ctx context.Context, messages []Message, tools []ToolDefinition,
-		onContent StreamCallback, onReasoning ReasoningCallback) (*Message, error)
+	// ChatStream 流式发送消息，所有流式事件通过统一 handler 回调
+	ChatStream(ctx context.Context, messages []Message, tools []ToolDefinition, handler StreamEventHandler) (*Message, error)
 }
 
 // ToolDefinition 工具定义（用于发送给 LLM）
@@ -103,11 +114,6 @@ type FunctionDefinition struct {
 	Parameters  map[string]interface{} `json:"parameters"`
 }
 
-// ToolCallObserver 工具调用观察者回调
-// 在工具执行前后调用，用于通知外部（如 WebSocket 推送）
-// result == nil 表示工具调用开始，result != nil 表示工具调用结束
-type ToolCallObserver func(toolName string, args map[string]interface{}, result *ToolResult)
-
 // Agent AI Agent 结构
 type Agent struct {
 	provider     LLMProvider
@@ -115,7 +121,6 @@ type Agent struct {
 	memory       []Message
 	systemPrompt string // 系统提示词
 	maxSteps     int    // 最大执行步数，防止无限循环
-	toolObserver ToolCallObserver // 可选：工具调用观察者（默认 nil 时使用 fmt.Printf 输出）
 }
 
 // NewAgent 创建新的 Agent
@@ -143,13 +148,6 @@ func (a *Agent) SetMaxSteps(steps int) {
 	a.maxSteps = steps
 }
 
-// SetToolObserver 设置工具调用观察者
-// 设置后，工具调用信息会通过回调通知（而非 fmt.Printf 输出）
-// 设置为 nil 可恢复默认的 fmt.Printf 输出行为
-func (a *Agent) SetToolObserver(observer ToolCallObserver) {
-	a.toolObserver = observer
-}
-
 // GetMemory 返回当前 memory 的副本
 func (a *Agent) GetMemory() []Message {
 	copied := make([]Message, len(a.memory))
@@ -162,7 +160,7 @@ func (a *Agent) SetMemory(messages []Message) {
 	a.memory = messages
 }
 
-// Run 运行 Agent
+// Run 运行 Agent（非流式模式）
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	// 先将用户消息加入 memory（确保持久化时包含用户消息）
 	if userInput != "" {
@@ -185,8 +183,8 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		// 检查是否需要调用工具
 		if len(response.ToolCalls) > 0 {
-			// 执行工具调用
-			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
+			// 执行工具调用（handler=nil 使用 fmt.Printf 兜底输出）
+			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls, nil)
 			if err != nil {
 				return "", err
 			}
@@ -198,6 +196,50 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		}
 
 		// 没有工具调用，返回最终结果
+		return response.Content, nil
+	}
+
+	return "", fmt.Errorf("达到最大执行步数 %d，可能存在循环", a.maxSteps)
+}
+
+// RunStream 以流式模式运行 Agent，所有事件通过统一 handler 回调
+func (a *Agent) RunStream(ctx context.Context, userInput string, handler StreamEventHandler) (string, error) {
+	sp, ok := a.provider.(StreamProvider)
+	if !ok {
+		return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
+	}
+
+	// 先将用户消息加入 memory（确保持久化时包含用户消息）
+	if userInput != "" {
+		a.memory = append(a.memory, Message{Role: "user", Content: userInput})
+	}
+	messages := a.buildMessages("")
+
+	for i := 0; i < a.maxSteps; i++ {
+		response, err := sp.ChatStream(ctx, messages, a.getToolDefinitions(), handler)
+		if err != nil {
+			return "", fmt.Errorf("LLM 流式调用失败: %w", err)
+		}
+
+		a.memory = append(a.memory, *response)
+		messages = append(messages, *response)
+
+		if len(response.ToolCalls) > 0 {
+			// 先通知 flush（渲染 LLM 文本），再执行工具
+			if handler != nil {
+				handler(StreamEvent{Type: EventFlush, Content: response.Content})
+			}
+
+			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls, handler)
+			if err != nil {
+				return "", err
+			}
+
+			a.memory = append(a.memory, toolResults...)
+			messages = append(messages, toolResults...)
+			continue
+		}
+
 		return response.Content, nil
 	}
 
@@ -221,7 +263,8 @@ func (a *Agent) getToolDefinitions() []ToolDefinition {
 }
 
 // executeToolCalls 执行工具调用
-func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]Message, error) {
+// handler 非 nil 时通过事件通知；为 nil 时 fallback 到 fmt.Printf 输出
+func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall, handler StreamEventHandler) ([]Message, error) {
 	var results []Message
 
 	for _, tc := range toolCalls {
@@ -232,8 +275,8 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 				Content: FormatToolError(fmt.Errorf("未知工具: %s", tc.Function.Name)),
 				IsError: true,
 			}
-			if a.toolObserver != nil {
-				a.toolObserver(tc.Function.Name, nil, errResult)
+			if handler != nil {
+				handler(StreamEvent{Type: EventToolCallEnd, ToolName: tc.Function.Name, ToolResult: errResult})
 			}
 			results = append(results, Message{
 				Role:       "tool",
@@ -250,8 +293,8 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 				Content: FormatValidationError(fmt.Sprintf("解析参数失败: %v", err)),
 				IsError: true,
 			}
-			if a.toolObserver != nil {
-				a.toolObserver(tc.Function.Name, nil, errResult)
+			if handler != nil {
+				handler(StreamEvent{Type: EventToolCallEnd, ToolName: tc.Function.Name, ToolResult: errResult})
 			}
 			results = append(results, Message{
 				Role:       "tool",
@@ -261,10 +304,9 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 			continue
 		}
 
-		fmt.Println(a.toolObserver)
 		// 通知：工具调用开始
-		if a.toolObserver != nil {
-			a.toolObserver(tc.Function.Name, args, nil)
+		if handler != nil {
+			handler(StreamEvent{Type: EventToolCallStart, ToolName: tc.Function.Name, ToolArgs: args})
 		} else {
 			fmt.Printf("\n🔧 调用工具: %s\n", tc.Function.Name)
 			if "shell" == tc.Function.Name {
@@ -285,8 +327,8 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 		}
 
 		// 通知：工具执行完毕
-		if a.toolObserver != nil {
-			a.toolObserver(tc.Function.Name, args, toolResult)
+		if handler != nil {
+			handler(StreamEvent{Type: EventToolCallEnd, ToolName: tc.Function.Name, ToolArgs: args, ToolResult: toolResult})
 		} else {
 			fmt.Printf("   结果: %s\n\n", toolResult.Content)
 		}
@@ -300,67 +342,6 @@ func (a *Agent) executeToolCalls(ctx context.Context, toolCalls []ToolCall) ([]M
 	}
 
 	return results, nil
-}
-
-// RunStream 以流式模式运行 Agent，实时输出文本片段
-// onChunk: 每收到一个正文片段时调用
-// onReasoning: 每收到一个推理片段时调用（推理模型专用，非推理模型可传 nil）
-// onFlush: 在执行 tool call 前调用，传入当前轮次累积的文本，供调用方清屏+渲染
-func (a *Agent) RunStream(ctx context.Context, userInput string, onChunk StreamCallback, onReasoning ReasoningCallback, onFlush StreamFlushCallback) (string, error) {
-	// 优先尝试 ReasoningStreamProvider（支持推理输出的流式接口）
-	rsp, isReasoning := a.provider.(ReasoningStreamProvider)
-	if !isReasoning {
-		// 回退到普通 StreamProvider
-		if _, ok := a.provider.(StreamProvider); !ok {
-			return "", fmt.Errorf("当前 LLM 提供者不支持流式输出")
-		}
-	}
-
-	// 先将用户消息加入 memory（确保持久化时包含用户消息）
-	if userInput != "" {
-		a.memory = append(a.memory, Message{Role: "user", Content: userInput})
-	}
-	messages := a.buildMessages("")
-
-	for i := 0; i < a.maxSteps; i++ {
-		var response *Message
-		var err error
-
-		if isReasoning && onReasoning != nil {
-			response, err = rsp.ChatStreamReasoning(ctx, messages, a.getToolDefinitions(), onChunk, onReasoning)
-		} else {
-			sp := a.provider.(StreamProvider)
-			response, err = sp.ChatStream(ctx, messages, a.getToolDefinitions(), onChunk)
-		}
-		if err != nil {
-			return "", fmt.Errorf("LLM 流式调用失败: %w", err)
-		}
-
-		a.memory = append(a.memory, *response)
-		messages = append(messages, *response)
-
-		if len(response.ToolCalls) > 0 {
-			// 先执行工具调用（打印工具信息），再渲染 LLM 文本
-			// 这样用户看到的是：工具调用 → 工具结果 → LLM 回复
-			toolResults, err := a.executeToolCalls(ctx, response.ToolCalls)
-
-			// 工具执行完毕后再渲染第1轮 LLM 文本（如"让我查看项目结构"）
-			if onFlush != nil {
-				onFlush(response.Content)
-			}
-			if err != nil {
-				return "", err
-			}
-
-			a.memory = append(a.memory, toolResults...)
-			messages = append(messages, toolResults...)
-			continue
-		}
-
-		return response.Content, nil
-	}
-
-	return "", fmt.Errorf("达到最大执行步数 %d，可能存在循环", a.maxSteps)
 }
 
 // buildMessages 构建消息列表（包含系统提示词和历史记忆）

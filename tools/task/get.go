@@ -57,7 +57,7 @@ func (t *TaskGetTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("任务系统未初始化")), IsError: true}, nil
 	}
 
-	taskListID := mgr.GetTaskListID()
+	taskListID := mgr.GetTaskListIDFromCtx(ctx)
 	task, err := mgr.Store.Get(taskListID, taskID)
 	if err != nil {
 		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("查询任务失败: %w", err)), IsError: true}, nil

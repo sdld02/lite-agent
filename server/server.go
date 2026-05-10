@@ -106,8 +106,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭所有活跃连接
 	s.connMu.RLock()
 	for h := range s.conns {
+		h.saveAllSessions()
+		h.cancelAllRunners()
 		h.cancel()
-		h.saveSession()
 		h.conn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseGoingAway, "服务正在关闭"))
 		h.conn.Close()

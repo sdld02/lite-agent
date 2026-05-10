@@ -119,7 +119,7 @@ func (t *TaskUpdateTool) Execute(ctx context.Context, args map[string]interface{
 		return &agent.ToolResult{Content: agent.FormatToolError(fmt.Errorf("任务系统未初始化")), IsError: true}, nil
 	}
 
-	taskListID := mgr.GetTaskListID()
+	taskListID := mgr.GetTaskListIDFromCtx(ctx)
 
 	// 获取现有任务
 	existing, err := mgr.Store.Get(taskListID, taskID)

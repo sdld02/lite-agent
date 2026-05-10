@@ -89,7 +89,7 @@ func (t *TaskCreateTool) Execute(ctx context.Context, args map[string]interface{
 		return &agent.ToolResult{Content: "任务系统未初始化，请先设置任务管理器", IsError: true}, nil
 	}
 
-	taskListID := mgr.GetTaskListID()
+	taskListID := mgr.GetTaskListIDFromCtx(ctx)
 
 	// 自动设置 owner（如果配置了 agent name）
 	owner := mgr.AgentInfo.Name

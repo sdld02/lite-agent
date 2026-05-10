@@ -29,7 +29,7 @@
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html,body { height:100%; font-family:var(--font-sans); background:var(--bg); color:var(--text); overflow:hidden; }
-#app { display:flex; height:100vh; }
+#app { display:flex; height:100%; }
 
 #sidebar {
   width:280px; min-width:280px; background:var(--sidebar-bg);
@@ -82,6 +82,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 #toolbar {
   padding:12px 20px; border-bottom:1px solid var(--border); display:flex;
   align-items:center; justify-content:space-between; background:var(--surface);
+  flex-shrink:0;
 }
 #toolbar .session-title { font-weight:600; font-size:15px; }
 #toolbar .actions { display:flex; gap:8px; }
@@ -148,9 +149,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
 .streaming-cursor::after { content:' ▌'; animation:blink 0.8s infinite; color:var(--accent); }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.spinner-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent); animation:pulse 1s infinite; }
+@keyframes pulse { 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
 .msg.streaming .bubble { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent-dim); }
 
-#input-area { padding:12px 20px; border-top:1px solid var(--border); background:var(--surface); }
+#input-area { padding:12px 20px; border-top:1px solid var(--border); background:var(--surface); flex-shrink:0; }
 .input-row { display:flex; gap:10px; align-items:flex-end; }
 #input {
   flex:1; padding:12px 16px; border-radius:var(--radius); border:1px solid var(--border);
@@ -390,11 +393,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     serverUrl: localStorage.getItem('lite_agent_url') || 'ws://localhost:9090/ws',
     sessions: [],
     activeSessionId: null,
-    currentTasks: [],
+    currentTasks: {},  // key: sessionId (serverSessionId), value: tasks array
     ws: null,
-    streaming: false,
     reconnectTimer: null
   };
+
+  // Per-session 流式状态 map（key = 前端 session id）
+  // 每个 entry: { msgIdx, containerEl, lastType, lastEl, streaming }
+  var streamStates = {};
 
   // 工具英文名 → 中文名映射
   var TOOL_NAMES_ZH = {
@@ -419,6 +425,31 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     return null;
   }
 
+  // 通过 serverSessionId 查找前端 session
+  function findSessionByServerId(serverSessionId) {
+    if (!serverSessionId) return null;
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].serverSessionId === serverSessionId) return state.sessions[i];
+    }
+    return null;
+  }
+
+  // 检查当前活跃 session 是否正在 streaming
+  function isActiveStreaming() {
+    var s = getActiveSession();
+    if (!s) return false;
+    var ss = streamStates[s.id];
+    return ss && ss.streaming;
+  }
+
+  // 检查是否有任何 session 正在 streaming
+  function hasAnyStreaming() {
+    for (var key in streamStates) {
+      if (streamStates[key] && streamStates[key].streaming) return true;
+    }
+    return false;
+  }
+
   // ========== SESSION MANAGEMENT ==========
   window.createSession = function() {
     var s = {
@@ -434,37 +465,32 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     state.activeSessionId = s.id;
     renderSessions();
     renderMessages();
+    updateSendButton();
     ensureConnected();
-    // Tell server to start a fresh session
-    sendWS({ type: 'new_session' });
-    // 清空任务列表
-    state.currentTasks = [];
-    renderTasks();
+    sendWS({ type: 'new_session', session_id: s.id });
   };
 
   window.switchSession = function(id) {
-    // Save current session messages before switching
+    if (state.activeSessionId === id) return;
     state.activeSessionId = id;
     renderSessions();
     var s = getActiveSession();
-    // 如果已有历史消息，直接渲染，不需要重新加载
-    if (s && s.messages && s.messages.length > 0) {
+    // 如果该 session 正在 streaming，恢复其流式 DOM
+    var ss = s ? streamStates[s.id] : null;
+    if (ss && ss.streaming) {
+      // 重绘消息（包括流式中的消息），然后重建流式 DOM 引用
       renderMessages();
-      // 仍然通知服务端切换上下文
-      if (s.serverSessionId) {
-        sendWS({ type: 'load_session', session_id: s.serverSessionId });
-      }
+      rebuildStreamDOM(s.id);
     } else {
       renderMessages();
-      // 通知服务端加载历史会话
-      if (s && s.serverSessionId) {
-        sendWS({ type: 'load_session', session_id: s.serverSessionId });
-      } else {
-        sendWS({ type: 'new_session' });
-      }
     }
-    // 请求当前会话的任务列表
-    requestTasks();
+    // 只有本地无消息但服务端有消息时才从服务端加载历史
+    if (s && s.serverSessionId && s.messages.length === 0 && s.messageCount > 0) {
+      sendWS({ type: 'load_session', session_id: s.serverSessionId });
+    }
+    // 渲染该 session 的任务列表
+    renderTasks();
+    updateSendButton();
   };
 
   window.deleteSession = function(id) {
@@ -473,26 +499,34 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       if (state.sessions[i].id === id) { idx = i; break; }
     }
     if (idx < 0) return;
+    var s = state.sessions[idx];
+    // 清理流式状态
+    if (streamStates[id]) delete streamStates[id];
     state.sessions.splice(idx, 1);
     if (state.activeSessionId === id) {
       state.activeSessionId = state.sessions.length > 0 ? state.sessions[0].id : null;
     }
     renderSessions();
     renderMessages();
-    if (id.indexOf('202') === 0) {
-      sendWS({ type: 'delete_session', session_id: id });
+    updateSendButton();
+    if (s.serverSessionId) {
+      sendWS({ type: 'delete_session', session_id: s.serverSessionId });
     }
   };
 
   window.clearSession = function() {
     var s = getActiveSession();
     if (!s) return;
+    // 如果正在 streaming，先取消
+    if (streamStates[s.id] && streamStates[s.id].streaming) {
+      stopSessionStreaming(s.id);
+    }
     s.messages = [];
     s.messageCount = 0;
     s.preview = '';
     s.serverSessionId = null;
     renderMessages();
-    sendWS({ type: 'new_session' });
+    sendWS({ type: 'new_session', session_id: s.id });
   };
 
   window.deleteCurrentSession = function() {
@@ -508,17 +542,21 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
   // ========== RENDER ==========
   // ========== TASK PANEL ==========
-  function requestTasks() {
-    sendWS({ type: 'get_tasks' });
+  function requestTasks(serverSessionId) {
+    if (serverSessionId) {
+      sendWS({ type: 'get_tasks', session_id: serverSessionId });
+    } else {
+      sendWS({ type: 'get_tasks' });
+    }
   }
 
   function renderTasks() {
-    var tasks = state.currentTasks || [];
+    var s = getActiveSession();
+    var tasks = (s && s.serverSessionId && state.currentTasks[s.serverSessionId]) || [];
     var list = document.getElementById('task-list');
     var count = document.getElementById('task-count');
     count.textContent = tasks.length;
 
-    // 统计各状态数量
     var pending = 0, inProgress = 0, completed = 0;
     for (var i = 0; i < tasks.length; i++) {
       if (tasks[i].status === 'pending') pending++;
@@ -556,8 +594,12 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       for (var i = 0; i < state.sessions.length; i++) {
         var s = state.sessions[i];
         var activeClass = s.id === state.activeSessionId ? ' active' : '';
+        var ss = streamStates[s.id];
+        var isStreaming = ss && ss.streaming;
         html += '<div class="session-item' + activeClass + '" onclick="switchSession(\'' + s.id + '\')">';
-        html += '<div class="info"><div class="name">' + escHtml(s.name) + '</div>';
+        html += '<div class="info"><div class="name">';
+        if (isStreaming) html += '<span class="spinner-dot" style="margin-right:6px;"></span>';
+        html += escHtml(s.name) + '</div>';
         html += '<div class="meta">' + s.messageCount + ' 条消息</div></div>';
         html += '<button class="delete-btn" onclick="event.stopPropagation();deleteSession(\'' + s.id + '\')" title="删除">✕</button>';
         html += '</div>';
@@ -583,91 +625,42 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     }
   }
 
-  // convertHistoryMessages 将后端 agent.Message 格式转换为前端消息格式
   function convertHistoryMessages(rawMessages) {
     var frontMessages = [];
     for (var i = 0; i < rawMessages.length; i++) {
       var raw = rawMessages[i];
       if (raw.role === 'user') {
-        frontMessages.push({
-          role: 'user',
-          content: raw.content || '',
-          reasoning: '',
-          toolCalls: []
-        });
+        frontMessages.push({ role: 'user', content: raw.content || '', reasoning: '', toolCalls: [] });
       } else if (raw.role === 'assistant') {
         var toolCalls = [];
         var segments = [];
-        // 推理内容
-        if (raw.reasoning_content) {
-          segments.push({ type: 'reasoning', content: raw.reasoning_content });
-        }
-        // 正文
-        if (raw.content) {
-          segments.push({ type: 'text', content: raw.content });
-        }
-        // 工具调用
+        if (raw.reasoning_content) segments.push({ type: 'reasoning', content: raw.reasoning_content });
+        if (raw.content) segments.push({ type: 'text', content: raw.content });
         if (raw.tool_calls && raw.tool_calls.length > 0) {
           for (var t = 0; t < raw.tool_calls.length; t++) {
             var tc = raw.tool_calls[t];
             var args = {};
             try {
               if (tc.function && tc.function.arguments) {
-                // arguments 可能是 JSON 对象（来自 json.RawMessage）或字符串
-                if (typeof tc.function.arguments === 'string') {
-                  args = JSON.parse(tc.function.arguments);
-                } else {
-                  args = tc.function.arguments;
-                }
+                args = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments;
               }
-            } catch(e) {
-              args = { _raw: tc.function ? tc.function.arguments : '' };
-            }
-            var tcObj = {
-              name: tc.function ? tc.function.name : 'unknown',
-              args: args,
-              result: undefined,
-              error: false
-            };
+            } catch(e) { args = { _raw: tc.function ? tc.function.arguments : '' }; }
+            var tcObj = { name: tc.function ? tc.function.name : 'unknown', args: args, result: undefined, error: false };
             toolCalls.push(tcObj);
-            segments.push({
-              type: 'tool_call',
-              name: tcObj.name,
-              args: tcObj.args,
-              result: undefined,
-              error: false
-            });
+            segments.push({ type: 'tool_call', name: tcObj.name, args: tcObj.args, result: undefined, error: false });
           }
         }
-        frontMessages.push({
-          role: 'assistant',
-          content: raw.content || '',
-          reasoning: raw.reasoning_content || '',
-          toolCalls: toolCalls,
-          segments: segments,
-          _done: true
-        });
+        frontMessages.push({ role: 'assistant', content: raw.content || '', reasoning: raw.reasoning_content || '', toolCalls: toolCalls, segments: segments, _done: true });
       } else if (raw.role === 'tool') {
-        // 将 tool 消息的结果关联到前一个 assistant 消息中最后一个未填 result 的 toolCall
         for (var j = frontMessages.length - 1; j >= 0; j--) {
           if (frontMessages[j].role === 'assistant') {
             var tcList = frontMessages[j].toolCalls;
             var segList = frontMessages[j].segments;
-            // 找到最后一个未填充结果的 toolCall
             for (var k = tcList.length - 1; k >= 0; k--) {
-              if (tcList[k].result === undefined) {
-                tcList[k].result = raw.content || '';
-                tcList[k].error = (raw.content && raw.content.indexOf('错误') === 0);
-                break;
-              }
+              if (tcList[k].result === undefined) { tcList[k].result = raw.content || ''; tcList[k].error = (raw.content && raw.content.indexOf('错误') === 0); break; }
             }
-            // 同样更新 segments
-            for (var k = segList.length - 1; k >= 0; k--) {
-              if (segList[k].type === 'tool_call' && segList[k].result === undefined) {
-                segList[k].result = raw.content || '';
-                segList[k].error = (raw.content && raw.content.indexOf('错误') === 0);
-                break;
-              }
+            for (var k2 = segList.length - 1; k2 >= 0; k2--) {
+              if (segList[k2].type === 'tool_call' && segList[k2].result === undefined) { segList[k2].result = raw.content || ''; segList[k2].error = (raw.content && raw.content.indexOf('错误') === 0); break; }
             }
             break;
           }
@@ -683,7 +676,6 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       html += '<div class="msg user"><div class="bubble">' + escHtmlBr(m.content) + '</div></div>';
     } else if (m.role === 'assistant') {
       html += '<div class="msg assistant" id="msg-' + idx + '">';
-      // Render segments in chronological order if available
       if (m.segments && m.segments.length > 0) {
         for (var s = 0; s < m.segments.length; s++) {
           var seg = m.segments[s];
@@ -707,10 +699,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           }
         }
       } else {
-        // Fallback: old render order for messages without segments
-        if (m.content) {
-          html += '<div class="bubble">' + renderMarkdown(m.content) + '</div>';
-        }
+        if (m.content) html += '<div class="bubble">' + renderMarkdown(m.content) + '</div>';
         if (m.toolCalls && m.toolCalls.length > 0) {
           for (var t = 0; t < m.toolCalls.length; t++) {
             var tc = m.toolCalls[t];
@@ -742,15 +731,10 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   function renderMarkdown(text) {
     if (!text) return '';
     var out = escHtml(text);
-    // Code blocks
     out = out.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    // Inline code
     out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // Bold
     out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic
     out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    // Newlines inside code blocks should stay, outside become <br>
     var parts = out.split(/<pre>[\s\S]*?<\/pre>/g);
     var codes = out.match(/<pre>[\s\S]*?<\/pre>/g) || [];
     var result = '';
@@ -764,7 +748,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   // ========== WEBSOCKET ==========
   var reconnectAttempts = 0;
   var maxReconnectAttempts = 10;
-  var connecting = false; // 防止并发连接
+  var connecting = false;
 
   function ensureConnected() {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
@@ -773,25 +757,17 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   }
 
   function connect() {
-    // 清除之前的重连定时器，防止定时器叠加
-    if (state.reconnectTimer) {
-      clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = null;
-    }
-    // 防止并发连接
+    if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null; }
     if (connecting) return;
     connecting = true;
 
-    if (state.ws) {
-      try { state.ws.close(); } catch(e) {}
-      state.ws = null;
-    }
+    if (state.ws) { try { state.ws.close(); } catch(e) {} state.ws = null; }
     setStatus('connecting');
     var ws = new WebSocket(state.serverUrl);
     state.ws = ws;
 
     ws.onopen = function() {
-      if (state.ws !== ws) return; // 忽略已过期的连接
+      if (state.ws !== ws) return;
       connecting = false;
       reconnectAttempts = 0;
       setStatus('connected');
@@ -799,20 +775,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
     ws.onmessage = function(event) {
       if (state.ws !== ws) return;
-      try {
-        var msg = JSON.parse(event.data);
-        handleServerMessage(msg);
-      } catch(e) {
-        console.error('JSON parse error:', e);
-      }
+      try { handleServerMessage(JSON.parse(event.data)); } catch(e) { console.error('JSON parse error:', e); }
     };
 
     ws.onclose = function() {
       connecting = false;
-      if (state.ws !== ws) return; // 忽略已过期的连接的 onclose
+      if (state.ws !== ws) return;
       setStatus('disconnected');
       state.ws = null;
-      // 指数退避重连：3s, 6s, 12s, 24s... 最大 30s
       if (state.sessions.length > 0 && reconnectAttempts < maxReconnectAttempts) {
         var delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30000);
         reconnectAttempts++;
@@ -820,10 +790,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       }
     };
 
-    ws.onerror = function() {
-      connecting = false;
-      setStatus('disconnected');
-    };
+    ws.onerror = function() { connecting = false; setStatus('disconnected'); };
   }
 
   function sendWS(obj) {
@@ -836,265 +803,382 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   }
 
   function handleServerMessage(msg) {
-    var s = getActiveSession();
+    // 通过 session_id 路由到正确的 session（精确匹配，不做通用 fallback）
+    var serverSid = msg.session_id || '';
+    var targetSession = serverSid ? findSessionByServerId(serverSid) : null;
 
     switch (msg.type) {
       case 'connected':
         setStatus('connected');
-        // 请求服务端历史 session 列表
         sendWS({ type: 'list_sessions' });
         if (msg.session) {
+          var s = getActiveSession();
           if (s && s.messages.length === 0 && msg.session.message_count > 0) {
-            // 有活跃 session，加载它的历史消息
             sendWS({ type: 'load_session', session_id: msg.session.id });
           } else if (!s) {
-            // 没有活跃 session，用服务端最新 session 初始化
             state.sessions.push({
-              id: msg.session.id,
-              name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
-              createdAt: msg.session.created_at,
-              messageCount: msg.session.message_count,
-              preview: msg.session.preview,
-              messages: [],
-              serverSessionId: msg.session.id
+              id: msg.session.id, name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
+              createdAt: msg.session.created_at, messageCount: msg.session.message_count,
+              preview: msg.session.preview, messages: [], serverSessionId: msg.session.id
             });
             state.activeSessionId = msg.session.id;
             renderSessions();
-            if (msg.session.message_count > 0) {
-              sendWS({ type: 'load_session', session_id: msg.session.id });
-            }
+            if (msg.session.message_count > 0) sendWS({ type: 'load_session', session_id: msg.session.id });
           }
         }
-        // 请求当前会话的任务列表
         requestTasks();
         break;
+
       case 'content':
-        appendContent(msg.content);
+        if (targetSession) appendContent(targetSession.id, msg.content);
         break;
       case 'reasoning':
-        appendReasoning(msg.content);
+        if (targetSession) appendReasoning(targetSession.id, msg.content);
         break;
       case 'tool_call':
-        appendToolCall(msg.tool_call);
+        if (targetSession) appendToolCall(targetSession.id, msg.tool_call);
+        break;
+      case 'tool_call_progress':
+        if (targetSession) updateToolCallProgress(targetSession.id, msg.tool_call_progress);
         break;
       case 'tool_result':
-        updateToolResult(msg.result);
+        if (targetSession) updateToolResult(targetSession.id, msg.result);
         break;
       case 'done':
-        finishStream(msg.response, null);
+        if (targetSession) finishStream(targetSession.id, msg.response, null);
         break;
       case 'error':
-        finishStream(null, msg.error);
+        // error 可能来自流式执行，也可能是非流式错误
+        if (targetSession && streamStates[targetSession.id] && streamStates[targetSession.id].streaming) {
+          finishStream(targetSession.id, null, msg.error);
+        }
         toast(msg.error, 'error');
         break;
+
       case 'session_info':
-        if (msg.session && s) {
-          s.serverSessionId = msg.session.id;
-          s.messageCount = msg.session.message_count;
-          s.preview = msg.session.preview || '';
-          s.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
-          renderSessions();
+        if (msg.session) {
+          // 1) 通过 server session_id 精确匹配（已绑定过的 session）
+          var infoTarget = targetSession;
+          // 2) 通过 client_session_id 精确匹配（服务端回传的前端 session ID）
+          if (!infoTarget && msg.client_session_id) {
+            infoTarget = getSessionById(msg.client_session_id);
+          }
+          // 3) 最后兜底：查找第一个 serverSessionId 为 null 的 session
+          if (!infoTarget) {
+            for (var pi = 0; pi < state.sessions.length; pi++) {
+              if (state.sessions[pi].serverSessionId === null) { infoTarget = state.sessions[pi]; break; }
+            }
+          }
+          if (infoTarget) {
+            infoTarget.serverSessionId = msg.session.id;
+            infoTarget.messageCount = msg.session.message_count;
+            infoTarget.preview = msg.session.preview || '';
+            infoTarget.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
+            renderSessions();
+          }
         }
         break;
+
       case 'session_loaded':
-        // 加载历史会话完成，包含完整消息历史
         if (msg.session && msg.messages) {
-          // 确保 session 存在
-          if (!s) {
-            s = {
-              id: msg.session.id,
-              name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
-              createdAt: msg.session.created_at,
-              messageCount: msg.session.message_count,
-              preview: msg.session.preview || '',
-              messages: [],
-              serverSessionId: msg.session.id
+          var sl = targetSession;
+          if (!sl) {
+            sl = {
+              id: msg.session.id, name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
+              createdAt: msg.session.created_at, messageCount: msg.session.message_count,
+              preview: msg.session.preview || '', messages: [], serverSessionId: msg.session.id
             };
-            // 检查是否已在 sessions 列表中
             var found = false;
             for (var si = 0; si < state.sessions.length; si++) {
-              if (state.sessions[si].id === s.id) { state.sessions[si] = s; found = true; break; }
+              if (state.sessions[si].id === sl.id) { state.sessions[si] = sl; found = true; break; }
             }
-            if (!found) { state.sessions.push(s); }
-            if (!state.activeSessionId) { state.activeSessionId = s.id; }
+            if (!found) state.sessions.push(sl);
+            if (!state.activeSessionId) state.activeSessionId = sl.id;
           }
-          // 转换并加载历史消息
-          s.messages = convertHistoryMessages(msg.messages);
-          s.messageCount = s.messages.length;
-          s.serverSessionId = msg.session.id;
-          s.preview = msg.session.preview || '';
-          s.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
+          sl.messages = convertHistoryMessages(msg.messages);
+          sl.messageCount = sl.messages.length;
+          sl.serverSessionId = msg.session.id;
+          sl.preview = msg.session.preview || '';
+          sl.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
           renderSessions();
-          renderMessages();
-          // 加载完历史会话后，请求任务列表
-          requestTasks();
+          // 只有当 loaded 的是当前活跃 session 时才重绘消息区域
+          if (sl.id === state.activeSessionId) renderMessages();
+          requestTasks(sl.serverSessionId);
         }
         break;
+
       case 'session_list':
-        // 同步服务端的 session 列表到前端
         if (msg.sessions) {
           for (var i = 0; i < msg.sessions.length; i++) {
             var si = msg.sessions[i];
             var found = null;
             for (var j = 0; j < state.sessions.length; j++) {
-              if (state.sessions[j].id === si.id) { found = state.sessions[j]; break; }
+              if (state.sessions[j].id === si.id || state.sessions[j].serverSessionId === si.id) { found = state.sessions[j]; break; }
             }
             if (found) {
-              // 更新已存在 session 的元信息
               found.messageCount = si.message_count;
               found.preview = si.preview;
               found.name = si.preview ? si.preview.slice(0, 30) : si.id;
               if (!found.serverSessionId) found.serverSessionId = si.id;
               if (!found.messages) found.messages = [];
             } else {
-              // 新增 session
               state.sessions.push({
-                id: si.id,
-                name: si.preview ? si.preview.slice(0, 30) : si.id,
-                createdAt: si.created_at,
-                messageCount: si.message_count,
-                preview: si.preview,
-                messages: [],
-                serverSessionId: si.id
+                id: si.id, name: si.preview ? si.preview.slice(0, 30) : si.id,
+                createdAt: si.created_at, messageCount: si.message_count,
+                preview: si.preview, messages: [], serverSessionId: si.id
               });
             }
           }
           renderSessions();
-          // 如果还没有活跃 session，自动选中第一个
           if (!state.activeSessionId && state.sessions.length > 0) {
             state.activeSessionId = state.sessions[0].id;
             renderSessions();
           }
         }
         break;
+
       case 'status':
         if (msg.status) {
           document.getElementById('server-addr').textContent = msg.status.active_connections + ' 连接 · ' + msg.status.uptime;
         }
         break;
+
       case 'tasks':
-        // 收到当前会话的任务列表
-        state.currentTasks = msg.tasks || [];
-        renderTasks();
+        // 按 session_id 存储任务列表
+        if (serverSid) {
+          state.currentTasks[serverSid] = msg.tasks || [];
+        }
+        // 如果是当前活跃 session 的任务，刷新显示
+        var activeS = getActiveSession();
+        if (activeS && activeS.serverSessionId === serverSid) {
+          renderTasks();
+        }
         break;
     }
   }
 
-  // ========== STREAMING (real-time DOM construction in chronological order) ==========
-  var streamMsgIdx = -1;
-  var streamContainerEl = null;  // stream container DOM element
-  var streamLastType = '';       // 'reasoning' | 'text' | 'tool_call'
-  var streamLastEl = null;       // last appended DOM element for content updates
+  // ========== PER-SESSION STREAMING ==========
 
-  function ensureStreamMsg() {
-    var s = getActiveSession();
+  function getStreamState(sessionId) {
+    if (!streamStates[sessionId]) {
+      streamStates[sessionId] = { msgIdx: -1, containerEl: null, lastType: '', lastEl: null, streaming: false };
+    }
+    return streamStates[sessionId];
+  }
+
+  function isSessionVisible(sessionId) {
+    return sessionId === state.activeSessionId;
+  }
+
+  function getSessionById(sessionId) {
+    for (var i = 0; i < state.sessions.length; i++) {
+      if (state.sessions[i].id === sessionId) return state.sessions[i];
+    }
+    return null;
+  }
+
+  function ensureStreamMsg(sessionId) {
+    var s = getSessionById(sessionId);
     if (!s) return null;
-    state.streaming = true;
-    var container = document.getElementById('messages');
-    var welcome = container.querySelector('.welcome');
-    if (welcome) welcome.remove();
+    var ss = getStreamState(sessionId);
+    ss.streaming = true;
+    var visible = isSessionVisible(sessionId);
 
     var lastMsg = s.messages[s.messages.length - 1];
     if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg._done) {
       s.messages.push({ role: 'assistant', content: '', reasoning: '', toolCalls: [], segments: [], _done: false });
-      var div = document.createElement('div');
-      div.className = 'msg assistant streaming';
-      div.id = 'msg-' + (s.messages.length - 1);
-      div.innerHTML = '<div class="stream-container" id="stream-' + (s.messages.length - 1) + '"></div>';
-      container.appendChild(div);
-      streamMsgIdx = s.messages.length - 1;
-      streamContainerEl = document.getElementById('stream-' + streamMsgIdx);
-      streamLastType = '';
-      streamLastEl = null;
+      ss.msgIdx = s.messages.length - 1;
+      ss.lastType = '';
+      ss.lastEl = null;
+
+      if (visible) {
+        var container = document.getElementById('messages');
+        var welcome = container.querySelector('.welcome');
+        if (welcome) welcome.remove();
+        var div = document.createElement('div');
+        div.className = 'msg assistant streaming';
+        div.id = 'msg-' + ss.msgIdx;
+        div.innerHTML = '<div class="stream-container" id="stream-' + sessionId + '-' + ss.msgIdx + '"></div>';
+        container.appendChild(div);
+        ss.containerEl = document.getElementById('stream-' + sessionId + '-' + ss.msgIdx);
+      } else {
+        ss.containerEl = null;
+      }
     } else {
-      streamMsgIdx = s.messages.length - 1;
-      if (!streamContainerEl) {
-        streamContainerEl = document.getElementById('stream-' + streamMsgIdx);
+      ss.msgIdx = s.messages.length - 1;
+      if (visible && !ss.containerEl) {
+        ss.containerEl = document.getElementById('stream-' + sessionId + '-' + ss.msgIdx);
       }
     }
     updateSendButton();
     return s.messages[s.messages.length - 1];
   }
 
-  function appendReasoning(chunk) {
-    var cur = ensureStreamMsg();
+  // 切换到 streaming session 时，重建流式 DOM 容器和已有内容
+  function rebuildStreamDOM(sessionId) {
+    var ss = streamStates[sessionId];
+    if (!ss || !ss.streaming) return;
+
+    var s = getSessionById(sessionId);
+    if (!s) return;
+    var cur = s.messages[ss.msgIdx];
     if (!cur) return;
+
+    // 找到消息 DOM 元素
+    var msgEl = document.getElementById('msg-' + ss.msgIdx);
+    if (!msgEl) return;
+
+    // 用流式容器替换静态 HTML
+    var containerId = 'stream-' + sessionId + '-' + ss.msgIdx;
+    msgEl.className = 'msg assistant streaming';
+    msgEl.innerHTML = '<div class="stream-container" id="' + containerId + '"></div>';
+    ss.containerEl = document.getElementById(containerId);
+    ss.lastType = '';
+    ss.lastEl = null;
+
+    if (!ss.containerEl || !cur.segments) return;
+
+    // 从 segments 数据重建 DOM
+    for (var i = 0; i < cur.segments.length; i++) {
+      var seg = cur.segments[i];
+      if (seg.type === 'reasoning' && seg.content) {
+        var details = document.createElement('details');
+        details.className = 'reasoning-block';
+        details.open = true;
+        details.innerHTML = '<summary>🧠 思考过程</summary><div class="reasoning-content">' + escHtml(seg.content) + '</div>';
+        ss.containerEl.appendChild(details);
+        ss.lastType = 'reasoning';
+        ss.lastEl = details;
+      } else if (seg.type === 'text' && seg.content) {
+        var bubble = document.createElement('div');
+        bubble.className = 'bubble streaming-cursor';
+        bubble.textContent = seg.content;
+        ss.containerEl.appendChild(bubble);
+        ss.lastType = 'text';
+        ss.lastEl = bubble;
+      } else if (seg.type === 'tool_call') {
+        var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
+        var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
+        var card = document.createElement('div');
+        card.className = 'tool-card';
+        card.setAttribute('data-tool-name', seg.name);
+        var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
+          '<span class="tool-icon">🔧</span>' +
+          '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
+        if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
+        headerHtml += '</div><span class="tool-arrow">▼</span></div>';
+        var resultHtml = '';
+        if (seg.result !== undefined) {
+          resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (seg.error ? 'error' : 'success') + '">' + escHtml(seg.result) + '</pre></div>';
+        } else {
+          resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="success" style="opacity:0.6">⏳ 执行中...</pre></div>';
+        }
+        card.innerHTML = headerHtml +
+          '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
+          '<pre>' + escHtml(JSON.stringify(seg.args, null, 2)) + '</pre>' +
+          resultHtml + '</div>';
+        ss.containerEl.appendChild(card);
+        ss.lastType = 'tool_call';
+        ss.lastEl = card;
+      }
+    }
+
+    // 滚动到底部
+    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+  }
+
+  function appendReasoning(sessionId, chunk) {
+    var cur = ensureStreamMsg(sessionId);
+    if (!cur) return;
+    var ss = getStreamState(sessionId);
     cur.reasoning += chunk;
-    // Track segment order
     if (!cur.segments) cur.segments = [];
     var lastSeg = cur.segments[cur.segments.length - 1];
-    if (lastSeg && lastSeg.type === 'reasoning') {
-      lastSeg.content += chunk;
-    } else {
-      cur.segments.push({ type: 'reasoning', content: chunk });
-    }
-    // 获取最后一个 reasoning segment 的独立内容（避免多轮累积拼接）
+    if (lastSeg && lastSeg.type === 'reasoning') { lastSeg.content += chunk; }
+    else { cur.segments.push({ type: 'reasoning', content: chunk }); }
     var lastRS = null;
     for (var si = cur.segments.length - 1; si >= 0; si--) {
       if (cur.segments[si].type === 'reasoning') { lastRS = cur.segments[si]; break; }
     }
     var displayReasoning = lastRS ? lastRS.content : cur.reasoning;
-    // Real-time DOM: create/update reasoning block
-    if (streamContainerEl) {
-      if (streamLastType === 'reasoning' && streamLastEl) {
-        var rc = streamLastEl.querySelector('.reasoning-content');
+    if (ss.containerEl) {
+      if (ss.lastType === 'reasoning' && ss.lastEl) {
+        var rc = ss.lastEl.querySelector('.reasoning-content');
         if (rc) rc.textContent = displayReasoning;
       } else {
         var details = document.createElement('details');
         details.className = 'reasoning-block';
         details.open = true;
         details.innerHTML = '<summary>🧠 思考过程</summary><div class="reasoning-content">' + escHtml(displayReasoning) + '</div>';
-        streamContainerEl.appendChild(details);
-        streamLastType = 'reasoning';
-        streamLastEl = details;
+        ss.containerEl.appendChild(details);
+        ss.lastType = 'reasoning';
+        ss.lastEl = details;
       }
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     }
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   }
 
-  function appendContent(chunk) {
-    var cur = ensureStreamMsg();
+  function appendContent(sessionId, chunk) {
+    var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
+    var ss = getStreamState(sessionId);
     cur.content += chunk;
-    // Track segment order
     if (!cur.segments) cur.segments = [];
     var lastSeg = cur.segments[cur.segments.length - 1];
-    if (lastSeg && lastSeg.type === 'text') {
-      lastSeg.content += chunk;
-    } else {
-      cur.segments.push({ type: 'text', content: chunk });
-    }
-    // 获取最后一个 text segment 的独立内容（避免多轮累积拼接）
+    if (lastSeg && lastSeg.type === 'text') { lastSeg.content += chunk; }
+    else { cur.segments.push({ type: 'text', content: chunk }); }
     var lastTS = null;
     for (var si = cur.segments.length - 1; si >= 0; si--) {
       if (cur.segments[si].type === 'text') { lastTS = cur.segments[si]; break; }
     }
     var displayContent = lastTS ? lastTS.content : cur.content;
-    // Real-time DOM: create/update text bubble as plain text (no flicker)
-    if (streamContainerEl) {
-      if (streamLastType === 'text' && streamLastEl) {
-        streamLastEl.textContent = displayContent;
+    if (ss.containerEl) {
+      if (ss.lastType === 'text' && ss.lastEl) {
+        ss.lastEl.textContent = displayContent;
       } else {
         var bubble = document.createElement('div');
         bubble.className = 'bubble streaming-cursor';
         bubble.textContent = displayContent;
-        streamContainerEl.appendChild(bubble);
-        streamLastType = 'text';
-        streamLastEl = bubble;
+        ss.containerEl.appendChild(bubble);
+        ss.lastType = 'text';
+        ss.lastEl = bubble;
       }
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     }
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   }
 
-  function appendToolCall(tc) {
-    var cur = ensureStreamMsg();
+  function updateToolCallProgress(sessionId, progress) {
+    if (!progress) return;
+    var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
+    var ss = getStreamState(sessionId);
+    if (ss.containerEl) {
+      var progressEl = ss.containerEl.querySelector('.tool-progress-indicator');
+      if (!progressEl) {
+        progressEl = document.createElement('div');
+        progressEl.className = 'tool-progress-indicator';
+        progressEl.style.cssText = 'padding:8px 12px;color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:6px;';
+        ss.containerEl.appendChild(progressEl);
+      }
+      var kb = (progress.args_bytes / 1024).toFixed(1);
+      var zhName = TOOL_NAMES_ZH[progress.name] || progress.name;
+      progressEl.innerHTML = '<span class="spinner-dot"></span> ' + escHtml(zhName) + ': 生成参数中... ' + kb + 'KB';
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    }
+  }
+
+  function appendToolCall(sessionId, tc) {
+    var cur = ensureStreamMsg(sessionId);
+    if (!cur) return;
+    var ss = getStreamState(sessionId);
+    if (ss.containerEl) {
+      var progressEl = ss.containerEl.querySelector('.tool-progress-indicator');
+      if (progressEl) progressEl.remove();
+    }
     cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, open: false });
-    // Track segment order
     if (!cur.segments) cur.segments = [];
     cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, open: false });
-    // Real-time DOM: append tool card (collapsed by default, with intent)
-    if (streamContainerEl) {
+    if (ss.containerEl) {
       var zhName = TOOL_NAMES_ZH[tc.name] || tc.name;
       var intent = (tc.args && tc.args.intent) ? tc.args.intent : '';
       var card = document.createElement('div');
@@ -1106,27 +1190,27 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
       headerHtml += '</div><span class="tool-arrow">▼</span></div>';
       card.innerHTML = headerHtml +
-        '<div class="tool-card-body">' +
-        '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
+        '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
         '<pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>' +
         '<div class="tool-result"><div class="tool-result-label">结果</div>' +
         '<pre class="success" style="opacity:0.6">⏳ 执行中...</pre></div></div>';
-      streamContainerEl.appendChild(card);
-      streamLastType = 'tool_call';
-      streamLastEl = card;
+      ss.containerEl.appendChild(card);
+      ss.lastType = 'tool_call';
+      ss.lastEl = card;
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     }
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   }
 
-  function updateToolResult(result) {
-    var cur = ensureStreamMsg();
+  function updateToolResult(sessionId, result) {
+    var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
+    var ss = getStreamState(sessionId);
+    var lastTc = null;
     if (cur.toolCalls && cur.toolCalls.length > 0) {
-      var lastTc = cur.toolCalls[cur.toolCalls.length - 1];
+      lastTc = cur.toolCalls[cur.toolCalls.length - 1];
       lastTc.result = result;
       lastTc.error = result.indexOf('错误') === 0;
     }
-    // Update the matching segment too
     if (cur.segments && cur.segments.length > 0) {
       for (var i = cur.segments.length - 1; i >= 0; i--) {
         if (cur.segments[i].type === 'tool_call') {
@@ -1136,9 +1220,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         }
       }
     }
-    // Real-time DOM: update the last tool card's result
-    if (streamContainerEl) {
-      var cards = streamContainerEl.querySelectorAll('.tool-card');
+    if (ss.containerEl) {
+      var cards = ss.containerEl.querySelectorAll('.tool-card');
       if (cards.length > 0) {
         var lastCard = cards[cards.length - 1];
         var resultPre = lastCard.querySelector('.tool-result pre');
@@ -1148,20 +1231,24 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           resultPre.className = lastTc ? (lastTc.error ? 'error' : 'success') : 'success';
         }
       }
-      streamLastType = 'tool_call'; // keep type so next content creates new bubble
+      ss.lastType = 'tool_call';
+      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     }
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
   }
 
-  function finishStream(response, error) {
-    state.streaming = false;
-    var idx = streamMsgIdx;
-    streamMsgIdx = -1;
-    streamContainerEl = null;
-    streamLastType = '';
-    streamLastEl = null;
-    var s = getActiveSession();
+  function finishStream(sessionId, response, error) {
+    var ss = getStreamState(sessionId);
+    var idx = ss.msgIdx;
+    var wasVisible = isSessionVisible(sessionId);
+    ss.streaming = false;
+    ss.msgIdx = -1;
+    ss.containerEl = null;
+    ss.lastType = '';
+    ss.lastEl = null;
+
+    var s = getSessionById(sessionId);
     if (!s) return;
+
     var lastMsg = s.messages[s.messages.length - 1];
     if (lastMsg && lastMsg.role === 'assistant') {
       lastMsg._done = true;
@@ -1170,30 +1257,32 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     if (error) {
       s.messages.push({ role: 'assistant', content: '❌ ' + error, reasoning: '', toolCalls: [], segments: [], _done: true });
     }
-    // Finalize: convert plain-text bubbles to markdown rendering
-    var msgEl = document.getElementById('msg-' + idx);
-    if (msgEl && lastMsg && !error) {
-      var bubbles = msgEl.querySelectorAll('.bubble');
-      for (var b = 0; b < bubbles.length; b++) {
-        var segIdx = -1;
-        var segCount = 0;
-        for (var si = 0; si < lastMsg.segments.length; si++) {
-          if (lastMsg.segments[si].type === 'text') {
-            if (segCount === b) { segIdx = si; break; }
-            segCount++;
+
+    if (wasVisible) {
+      var msgEl = document.getElementById('msg-' + idx);
+      if (msgEl && lastMsg && !error) {
+        var bubbles = msgEl.querySelectorAll('.bubble');
+        for (var b = 0; b < bubbles.length; b++) {
+          var segIdx = -1;
+          var segCount = 0;
+          for (var si = 0; si < lastMsg.segments.length; si++) {
+            if (lastMsg.segments[si].type === 'text') {
+              if (segCount === b) { segIdx = si; break; }
+              segCount++;
+            }
           }
+          if (segIdx >= 0) bubbles[b].innerHTML = renderMarkdown(lastMsg.segments[segIdx].content);
         }
-        if (segIdx >= 0) {
-          bubbles[b].innerHTML = renderMarkdown(lastMsg.segments[segIdx].content);
+        var reasonings = msgEl.querySelectorAll('.reasoning-content');
+        for (var r = 0; r < reasonings.length; r++) {
+          reasonings[r].innerHTML = escHtmlBr(reasonings[r].textContent);
         }
+        msgEl.classList.remove('streaming');
+      } else {
+        renderMessages();
       }
-      // Convert reasoning blocks from textContent to escHtmlBr
-      var reasonings = msgEl.querySelectorAll('.reasoning-content');
-      for (var r = 0; r < reasonings.length; r++) {
-        reasonings[r].innerHTML = escHtmlBr(reasonings[r].textContent);
-      }
-      msgEl.classList.remove('streaming');
     }
+
     s.messageCount = s.messages.length;
     var firstUser = null;
     for (var i = 0; i < s.messages.length; i++) {
@@ -1201,42 +1290,40 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     }
     s.preview = firstUser ? firstUser.content.slice(0, 50) : '';
     if (s.preview) s.name = s.preview.slice(0, 30);
-    // If error, do full re-render; otherwise DOM is already built
-    if (error) {
-      renderMessages();
-    }
     renderSessions();
     updateSendButton();
   }
 
+  // 取消指定 session 的流式输出（发送 cancel 消息，不断开 WebSocket）
+  function stopSessionStreaming(sessionId) {
+    var s = getSessionById(sessionId);
+    if (!s || !s.serverSessionId) return;
+    sendWS({ type: 'cancel', session_id: s.serverSessionId });
+  }
+
   window.stopStreaming = function() {
-    if (state.ws) {
-      try { state.ws.close(); } catch(e) {}
-      state.ws = null;
+    var s = getActiveSession();
+    if (!s) return;
+    var ss = streamStates[s.id];
+    if (ss && ss.streaming) {
+      stopSessionStreaming(s.id);
+      // 本地立即标记结束（服务端取消后还会发 error 消息）
+      finishStream(s.id, null, '用户停止生成');
     }
-    state.streaming = false;
-    connecting = false;
-    reconnectAttempts = 0;
-    updateSendButton();
-    finishStream(null, '用户停止生成');
-    if (state.reconnectTimer) {
-      clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = null;
-    }
-    state.reconnectTimer = setTimeout(connect, 1000);
   };
 
   function updateSendButton() {
     var sendBtn = document.getElementById('send-btn');
     var stopBtn = document.getElementById('stop-btn');
-    if (state.streaming) {
+    var streaming = isActiveStreaming();
+    if (streaming) {
       sendBtn.style.display = 'none';
       stopBtn.style.display = 'block';
     } else {
       sendBtn.style.display = 'block';
       stopBtn.style.display = 'none';
     }
-    sendBtn.disabled = state.streaming;
+    sendBtn.disabled = streaming;
   }
 
   // ========== USER INPUT ==========
@@ -1252,7 +1339,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   window.sendMessage = function() {
     var input = document.getElementById('input');
     var text = input.value.trim();
-    if (!text || state.streaming) return;
+    if (!text) return;
+
+    // 检查当前活跃 session 是否正在 streaming
+    if (isActiveStreaming()) return;
+
     input.value = '';
     input.style.height = 'auto';
 
@@ -1261,18 +1352,28 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     }
 
     var s = getActiveSession();
+    if (!s) return;
     s.messages.push({ role: 'user', content: text, reasoning: '', toolCalls: [] });
     s.messageCount = s.messages.length;
     s.preview = text.slice(0, 50);
     s.name = text.slice(0, 30);
+
+    // 初始化该 session 的流式状态
+    var ss = getStreamState(s.id);
+    ss.streaming = true;
+
     renderMessages();
     renderSessions();
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    updateSendButton();
 
     ensureConnected();
     var delay = (state.ws && state.ws.readyState === WebSocket.OPEN) ? 0 : 500;
+    var sendSessionId = s.id;  // 捕获前端 session ID，用于延迟后查找最新的 serverSessionId
     setTimeout(function() {
-      sendWS({ type: 'chat', content: text });
+      var target = getSessionById(sendSessionId);
+      var sid = (target && target.serverSessionId) ? target.serverSessionId : '';
+      sendWS({ type: 'chat', content: text, session_id: sid });
     }, delay);
   };
 
@@ -1314,7 +1415,12 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   document.addEventListener('DOMContentLoaded', function() {
     try {
       var saved = localStorage.getItem('lite_agent_sessions');
-      if (saved) state.sessions = JSON.parse(saved);
+      if (saved) {
+        state.sessions = JSON.parse(saved);
+        for (var i = 0; i < state.sessions.length; i++) {
+          if (!state.sessions[i].messages) state.sessions[i].messages = [];
+        }
+      }
     } catch(e) {}
     if (state.sessions.length > 0) {
       state.activeSessionId = state.sessions[0].id;
@@ -1335,7 +1441,6 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     });
 
     setInterval(function() {
-      // 保存所有 sessions 到 localStorage（包括服务端 session）
       var local = [];
       for (var i = 0; i < state.sessions.length; i++) {
         local.push({

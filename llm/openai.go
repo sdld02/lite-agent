@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -269,8 +270,9 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []agent.Message, too
 	return result, nil
 }
 
-// ChatStream 实现 StreamProvider 接口，流式发送消息
-func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Message, tools []agent.ToolDefinition, callback agent.StreamCallback) (*agent.Message, error) {
+// ChatStream 实现 StreamProvider 接口，统一流式发送消息
+// 通过 handler 发射: EventContent, EventReasoning, EventToolCallProgress
+func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Message, tools []agent.ToolDefinition, handler agent.StreamEventHandler) (*agent.Message, error) {
 	body, err := p.buildChatRequest(messages, tools, true)
 	if err != nil {
 		return nil, err
@@ -285,8 +287,13 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Messag
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	// 流式请求不使用固定 Timeout 的 client，用独立 client 避免影响非流式调用
-	streamClient := &http.Client{}
+	// 流式请求：连接超时 30s，整体不限时
+	streamClient := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
 	resp, err := streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
@@ -301,11 +308,15 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Messag
 	// 解析 SSE 流
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
-	// toolCallsMap 用于按 index 累积 tool_call 片段
 	toolCallsMap := make(map[int]*openAIToolCall)
 	role := "assistant"
 
+	// 节流状态：控制 ToolCallProgress 事件发送频率
+	var lastProgressTime time.Time
+	var lastProgressBytes int
+
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 512*1024), 512*1024) // 512KB buffer
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -340,148 +351,19 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Messag
 			role = delta.Role
 		}
 
-		// 处理推理内容（静默累积，不通过回调输出）
-		if delta.ReasoningContent != "" {
-			reasoningBuilder.WriteString(delta.ReasoningContent)
-		}
-
-		// 处理文本内容
-		if delta.Content != "" {
-			contentBuilder.WriteString(delta.Content)
-			if callback != nil {
-				callback(delta.Content)
-			}
-		}
-
-		// 处理 tool_calls 片段（按 index 累积）
-		for _, tc := range delta.ToolCalls {
-			existing, ok := toolCallsMap[tc.Index]
-			if !ok {
-				existing = &openAIToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-					Function: openAIFunctionCall{
-						Name: tc.Function.Name,
-					},
-				}
-				toolCallsMap[tc.Index] = existing
-			} else {
-				if tc.ID != "" {
-					existing.ID = tc.ID
-				}
-				if tc.Type != "" {
-					existing.Type = tc.Type
-				}
-				if tc.Function.Name != "" {
-					existing.Function.Name = tc.Function.Name
-				}
-			}
-			existing.Function.Arguments += tc.Function.Arguments
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取流失败: %w", err)
-	}
-
-	// 组装最终 Message
-	result := &agent.Message{
-		Role:             role,
-		Content:          contentBuilder.String(),
-		ReasoningContent: reasoningBuilder.String(),
-	}
-
-	if len(toolCallsMap) > 0 {
-		toolCalls := make([]openAIToolCall, 0, len(toolCallsMap))
-		for _, tc := range toolCallsMap {
-			toolCalls = append(toolCalls, *tc)
-		}
-		result.ToolCalls = convertToolCalls(toolCalls)
-	}
-
-	return result, nil
-}
-
-// ChatStreamReasoning 实现 ReasoningStreamProvider 接口，流式发送消息并分别回调推理和正文内容
-func (p *OpenAIProvider) ChatStreamReasoning(ctx context.Context, messages []agent.Message, tools []agent.ToolDefinition, onContent agent.StreamCallback, onReasoning agent.ReasoningCallback) (*agent.Message, error) {
-	body, err := p.buildChatRequest(messages, tools, true)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Accept", "text/event-stream")
-
-	streamClient := &http.Client{}
-	resp, err := streamClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API 返回状态码 %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	// 解析 SSE 流
-	var contentBuilder strings.Builder
-	var reasoningBuilder strings.Builder
-	toolCallsMap := make(map[int]*openAIToolCall)
-	role := "assistant"
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk openAIStreamResponse
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		if chunk.Error.Message != "" {
-			return nil, fmt.Errorf("API 错误: %s", chunk.Error.Message)
-		}
-
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		delta := chunk.Choices[0].Delta
-
-		if delta.Role != "" {
-			role = delta.Role
-		}
-
 		// 处理推理内容
 		if delta.ReasoningContent != "" {
 			reasoningBuilder.WriteString(delta.ReasoningContent)
-			if onReasoning != nil {
-				onReasoning(delta.ReasoningContent)
+			if handler != nil {
+				handler(agent.StreamEvent{Type: agent.EventReasoning, Content: delta.ReasoningContent})
 			}
 		}
 
 		// 处理正文内容
 		if delta.Content != "" {
 			contentBuilder.WriteString(delta.Content)
-			if onContent != nil {
-				onContent(delta.Content)
+			if handler != nil {
+				handler(agent.StreamEvent{Type: agent.EventContent, Content: delta.Content})
 			}
 		}
 
@@ -509,6 +391,21 @@ func (p *OpenAIProvider) ChatStreamReasoning(ctx context.Context, messages []age
 				}
 			}
 			existing.Function.Arguments += tc.Function.Arguments
+
+			// Provider 层节流：每 1KB 增量或 200ms 间隔才发射进度事件
+			totalBytes := len(existing.Function.Arguments)
+			if handler != nil && existing.Function.Name != "" {
+				now := time.Now()
+				if now.Sub(lastProgressTime) >= 200*time.Millisecond || totalBytes-lastProgressBytes >= 1024 {
+					handler(agent.StreamEvent{
+						Type:      agent.EventToolCallProgress,
+						ToolName:  existing.Function.Name,
+						ArgsBytes: totalBytes,
+					})
+					lastProgressTime = now
+					lastProgressBytes = totalBytes
+				}
+			}
 		}
 	}
 
@@ -524,9 +421,15 @@ func (p *OpenAIProvider) ChatStreamReasoning(ctx context.Context, messages []age
 	}
 
 	if len(toolCallsMap) > 0 {
+		// 按 index 排序，保证 tool_calls 顺序与 LLM 返回一致
+		indices := make([]int, 0, len(toolCallsMap))
+		for idx := range toolCallsMap {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
 		toolCalls := make([]openAIToolCall, 0, len(toolCallsMap))
-		for _, tc := range toolCallsMap {
-			toolCalls = append(toolCalls, *tc)
+		for _, idx := range indices {
+			toolCalls = append(toolCalls, *toolCallsMap[idx])
 		}
 		result.ToolCalls = convertToolCalls(toolCalls)
 	}
