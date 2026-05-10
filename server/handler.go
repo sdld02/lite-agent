@@ -52,6 +52,9 @@ type ConnectionHandler struct {
 	runnersMu sync.RWMutex
 	activeSessionID string // 当前聚焦的 session ID
 
+	// 追踪活跃的 runChat goroutine，确保关闭 outChan 前所有发送者已退出
+	chatWg sync.WaitGroup
+
 	// 服务引用（用于状态查询等）
 	server *Server
 }
@@ -141,6 +144,7 @@ func (h *ConnectionHandler) Run() {
 		h.saveAllSessions()
 		h.cancelAllRunners()
 		h.cancel()         // 通知所有 goroutine 停止（heartbeat 等）
+		h.chatWg.Wait()    // 等待所有 runChat goroutine 退出，防止 send on closed channel
 		close(h.outChan)   // 关闭写队列，writeLoop 退出
 		<-writerDone       // 等待 writeLoop 完成，确保所有排队消息已写入
 		h.conn.Close()
@@ -229,7 +233,11 @@ func (h *ConnectionHandler) handleChat(sessionID string, content string) {
 	}
 
 	// 异步执行 Agent
-	go h.runChat(runner, content)
+	h.chatWg.Add(1)
+	go func() {
+		defer h.chatWg.Done()
+		h.runChat(runner, content)
+	}()
 }
 
 // runChat 在 goroutine 中执行 Agent 对话（实际执行逻辑）
