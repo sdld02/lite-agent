@@ -310,6 +310,25 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   #sidebar { width:240px; min-width:240px; }
   .msg { max-width:92%; }
 }
+
+/* ====== Telegram Bot 配置样式 ====== */
+.telegram-section { margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
+.telegram-section .section-title { font-size:14px; font-weight:600; margin-bottom:12px; display:flex; align-items:center; gap:6px; }
+.telegram-status { display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:var(--radius-sm); font-size:12px; margin-top:8px; }
+.telegram-status.running { background:rgba(74,222,128,0.1); color:var(--success); border:1px solid rgba(74,222,128,0.2); }
+.telegram-status.stopped { background:rgba(139,143,163,0.08); color:var(--text-muted); border:1px solid var(--border); }
+.telegram-status.error { background:rgba(248,113,113,0.1); color:var(--error); border:1px solid rgba(248,113,113,0.2); }
+.telegram-status .status-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+.telegram-status.running .status-dot { background:var(--success); animation:pulse 1.5s infinite; }
+.telegram-status.stopped .status-dot { background:var(--text-muted); }
+.telegram-status.error .status-dot { background:var(--error); }
+.telegram-actions { display:flex; gap:8px; margin-top:8px; }
+.telegram-actions button { padding:6px 14px; border-radius:var(--radius-sm); font-size:12px; cursor:pointer; border:1px solid var(--border); transition:all 0.2s; }
+.telegram-actions .tg-start { background:var(--success); color:#000; border-color:var(--success); }
+.telegram-actions .tg-start:hover { filter:brightness(1.15); }
+.telegram-actions .tg-stop { background:transparent; color:var(--error); border-color:var(--error); }
+.telegram-actions .tg-stop:hover { background:rgba(248,113,113,0.1); }
+.telegram-actions .tg-start:disabled, .telegram-actions .tg-stop:disabled { opacity:0.4; cursor:not-allowed; }
 </style>
 </head>
 <body>
@@ -400,6 +419,30 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     <label style="margin-top:16px;">WebSocket 地址</label>
     <input id="cfg-url" type="text" value="ws://localhost:9090/ws" placeholder="ws://localhost:9090/ws">
 
+    <!-- Telegram Bot 配置 -->
+    <div class="telegram-section">
+      <div class="section-title">🤖 Telegram Bot</div>
+
+      <label>Bot Token</label>
+      <div style="display:flex;gap:8px;">
+        <input id="cfg-tg-token" type="password" placeholder="123456:ABC-DEF" style="flex:1;">
+        <button onclick="toggleTgToken()" style="padding:8px 12px;background:var(--surface);border:1px solid var(--border);color:var(--text-secondary);border-radius:var(--radius-sm);cursor:pointer;font-size:12px;white-space:nowrap;">👁 显示</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+        在 Telegram 找 <code>@BotFather</code>，发送 <code>/newbot</code> 创建
+      </div>
+
+      <div class="telegram-status stopped" id="tg-status" style="display:none;">
+        <span class="status-dot"></span>
+        <span id="tg-status-text">未启动</span>
+      </div>
+
+      <div class="telegram-actions">
+        <button class="tg-start" id="tg-start-btn" onclick="startTelegramBot()">▶ 启动 Bot</button>
+        <button class="tg-stop" id="tg-stop-btn" onclick="stopTelegramBot()" disabled>⏹ 停止</button>
+      </div>
+    </div>
+
     <div class="modal-buttons">
       <button class="secondary" onclick="closeConfig()">取消</button>
       <button class="primary" onclick="saveConfig()">保存并连接</button>
@@ -434,6 +477,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   // Streaming 超时检测：如果 streaming 状态超过 5 分钟无任何事件，自动重置
   var STREAM_TIMEOUT_MS = 300000;
   var streamTimers = {};
+
+  // Telegram Bot 状态
+  var tgState = {
+    token: localStorage.getItem('lite_agent_tg_token') || '',
+    status: 'stopped',
+    username: '',
+    error: ''
+  };
 
   // 工具英文名 → 中文名映射
   var TOOL_NAMES_ZH = {
@@ -881,6 +932,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         sendWS({ type: 'list_sessions' });
         // 连接成功后自动发送 LLM 配置（如果有保存的配置）
         sendLLMConfig();
+        // 连接成功后查询 Telegram Bot 状态
+        requestTelegramConfig();
         if (msg.session) {
           var s = getActiveSession();
           if (s && s.messages.length === 0 && msg.session.message_count > 0) {
@@ -1067,6 +1120,19 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           }
           // 如果配置弹窗打开，更新弹窗中的值
           updateConfigModalIfOpen();
+        }
+        break;
+
+      case 'telegram_config':
+        if (msg.telegram_config) {
+          tgState.status = msg.telegram_config.status || 'stopped';
+          tgState.username = msg.telegram_config.username || '';
+          tgState.error = msg.telegram_config.error || '';
+          // Token 仅在首次设置时更新（服务端返回脱敏版本）
+          if (msg.telegram_config.token && !tgState.token) {
+            tgState.token = msg.telegram_config.token;
+          }
+          updateTgStatusUI();
         }
         break;
     }
@@ -1545,9 +1611,18 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     document.getElementById('cfg-model').value = llmState.model;
     document.getElementById('config-modal').style.display = 'flex';
 
+    // Telegram: 恢复已保存的 Token 并同步 UI
+    var savedTgToken = localStorage.getItem('lite_agent_tg_token');
+    if (savedTgToken && !tgState.token) tgState.token = savedTgToken;
+    document.getElementById('cfg-tg-token').value = tgState.token;
+    updateTgStatusUI();
+
     // 首次打开且已连接时，尝试从服务端获取当前配置
     if (!llmState.baseUrl && state.ws && state.ws.readyState === WebSocket.OPEN) {
       sendWS({ type: 'get_llm_config' });
+    }
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      sendWS({ type: 'get_telegram_config' });
     }
   };
   window.closeConfig = function() { document.getElementById('config-modal').style.display = 'none'; };
@@ -1575,6 +1650,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     localStorage.setItem('lite_agent_provider', llmState.provider);
     localStorage.setItem('lite_agent_base_url', llmState.baseUrl);
     localStorage.setItem('lite_agent_model', llmState.model);
+
+    // 保存 Telegram Token
+    var tgToken = document.getElementById('cfg-tg-token').value.trim();
+    tgState.token = tgToken;
+    localStorage.setItem('lite_agent_tg_token', tgToken);
 
     closeConfig();
 
@@ -1611,7 +1691,91 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       document.getElementById('cfg-base-url').value = llmState.baseUrl || '';
       document.getElementById('cfg-model').value = llmState.model || '';
       document.getElementById('cfg-provider').value = llmState.provider || 'custom';
+      // 同步 Telegram UI
+      updateTgStatusUI();
     }
+  }
+
+  // ========== TELEGRAM BOT ==========
+  function updateTgStatusUI() {
+    var tokenInput = document.getElementById('cfg-tg-token');
+    var statusEl = document.getElementById('tg-status');
+    var statusText = document.getElementById('tg-status-text');
+    var startBtn = document.getElementById('tg-start-btn');
+    var stopBtn = document.getElementById('tg-stop-btn');
+
+    // Token 输入
+    if (tgState.token && tokenInput.value === '') {
+      tokenInput.value = tgState.token;
+    }
+
+    // 状态显示
+    statusEl.style.display = 'flex';
+    statusEl.className = 'telegram-status ' + tgState.status;
+    if (tgState.status === 'running') {
+      statusText.textContent = tgState.username ? '运行中 @' + tgState.username : '运行中';
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+    } else if (tgState.status === 'error') {
+      statusText.textContent = '错误: ' + (tgState.error || '未知错误');
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    } else {
+      statusText.textContent = '已停止';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+    }
+  }
+
+  window.toggleTgToken = function() {
+    var input = document.getElementById('cfg-tg-token');
+    if (input.type === 'password') {
+      input.type = 'text';
+      event.target.textContent = '🙈 隐藏';
+    } else {
+      input.type = 'password';
+      event.target.textContent = '👁 显示';
+    }
+  };
+
+  window.startTelegramBot = function() {
+    var tokenInput = document.getElementById('cfg-tg-token');
+    var token = tokenInput.value.trim();
+    if (!token) {
+      toast('请先输入 Telegram Bot Token', 'error');
+      return;
+    }
+
+    // 保存 Token
+    tgState.token = token;
+    localStorage.setItem('lite_agent_tg_token', token);
+
+    // 先设置 Token 到服务端
+    sendWS({
+      type: 'set_telegram_config',
+      telegram_config: { token: token, status: 'stopped', username: '', error: '' }
+    });
+
+    // 然后启动
+    sendWS({ type: 'start_telegram_bot' });
+
+    // 更新 UI
+    tgState.status = 'running';
+    tgState.error = '';
+    updateTgStatusUI();
+    toast('正在启动 Telegram Bot...', 'success');
+  };
+
+  window.stopTelegramBot = function() {
+    sendWS({ type: 'stop_telegram_bot' });
+    tgState.status = 'stopped';
+    updateTgStatusUI();
+    toast('Telegram Bot 已停止', 'success');
+  };
+
+  // 请求 Telegram Bot 当前状态（连接建立后调用）
+  function requestTelegramConfig() {
+    sendWS({ type: 'get_telegram_config' });
   }
 
   // ========== TOAST ==========

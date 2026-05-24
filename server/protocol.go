@@ -11,10 +11,11 @@ import "encoding/json"
 
 // ClientMessage 客户端发来的消息
 type ClientMessage struct {
-	Type      string         `json:"type"`                 // 消息类型
-	Content   string         `json:"content,omitempty"`    // chat 类型的用户输入
-	SessionID string         `json:"session_id,omitempty"` // 目标会话 ID
-	LLMConfig *LLMConfigInfo `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
+	Type            string            `json:"type"`                 // 消息类型
+	Content         string            `json:"content,omitempty"`    // chat 类型的用户输入
+	SessionID       string            `json:"session_id,omitempty"` // 目标会话 ID
+	LLMConfig       *LLMConfigInfo    `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
+	TelegramConfig  *TelegramConfigInfo `json:"telegram_config,omitempty"` // set_telegram_config 时的 Telegram 配置
 }
 
 // 支持的客户端消息类型常量
@@ -29,6 +30,12 @@ const (
 	MsgTypeCancel        = "cancel"         // 取消指定 session 的执行
 	MsgTypeGetLLMConfig  = "get_llm_config" // 获取 LLM 配置
 	MsgTypeSetLLMConfig  = "set_llm_config" // 设置 LLM 配置
+
+	// === Telegram Bot 管理 ===
+	MsgTypeGetTelegramConfig  = "get_telegram_config"  // 获取 Telegram Bot 配置状态
+	MsgTypeSetTelegramConfig  = "set_telegram_config"  // 设置 Telegram Bot Token
+	MsgTypeStartTelegramBot   = "start_telegram_bot"   // 启动 Telegram Bot
+	MsgTypeStopTelegramBot    = "stop_telegram_bot"    // 停止 Telegram Bot
 )
 
 // ========== 服务端 → 客户端 ==========
@@ -51,6 +58,7 @@ type ServerMessage struct {
 	Messages         []json.RawMessage `json:"messages,omitempty"`          // 历史消息列表（session_loaded 时）
 	Tasks            []TaskInfo        `json:"tasks,omitempty"`             // 任务列表（tasks 消息）
 	LLMConfig        *LLMConfigInfo    `json:"llm_config,omitempty"`        // LLM 配置（llm_config 消息）
+	TelegramConfig   *TelegramConfigInfo `json:"telegram_config,omitempty"` // Telegram Bot 配置（telegram_config 消息）
 }
 
 // 支持的服务端消息类型常量
@@ -69,6 +77,7 @@ const (
 	MsgTypeTasks            = "tasks"               // 当前会话的任务列表
 	MsgTypeStatus           = "status"              // 服务状态
 	MsgTypeLLMConfig        = "llm_config"          // LLM 配置信息
+	MsgTypeTelegramConfig   = "telegram_config"     // Telegram Bot 配置信息
 )
 
 // ToolCallMsg 工具调用消息
@@ -114,6 +123,14 @@ type LLMConfigInfo struct {
 	APIKey   string `json:"api_key"`   // API Key（已脱敏显示）
 	BaseURL  string `json:"base_url"`  // API Base URL
 	Model    string `json:"model"`     // 模型名称
+}
+
+// TelegramConfigInfo Telegram Bot 配置信息（发送给客户端 / 接收客户端更新）
+type TelegramConfigInfo struct {
+	Token    string `json:"token"`    // Bot Token（脱敏显示：前4后4位）
+	Status   string `json:"status"`   // 运行状态: "stopped", "running", "error"
+	Username string `json:"username"` // Bot 用户名（运行时才有）
+	Error    string `json:"error"`    // 错误信息
 }
 
 // ========== 辅助函数 ==========

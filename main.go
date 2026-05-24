@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/bot"
 	"lite-agent/llm"
 	"lite-agent/server"
 	"lite-agent/session"
@@ -133,6 +134,8 @@ func main() {
 	sessionID := flag.String("session", "", "指定加载某个 session ID")
 	serverMode := flag.Bool("server", false, "以 WebSocket 服务模式启动（常驻后台）")
 	serverAddr := flag.String("addr", ":9090", "WebSocket 服务监听地址")
+	telegramMode := flag.Bool("telegram", false, "以 Telegram Bot 模式启动")
+	telegramToken := flag.String("token", "", "Telegram Bot Token（也可通过 TELEGRAM_BOT_TOKEN 环境变量设置）")
 	flag.Parse()
 
 	// 确定 API Key
@@ -352,6 +355,72 @@ func main() {
 		}
 		return
 	}
+
+	// === Telegram Bot 模式分支 ===
+	if *telegramMode {
+		// 确定 Bot Token
+		botToken := *telegramToken
+		if botToken == "" {
+			botToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+		}
+		if botToken == "" {
+			fmt.Println("❌ 请设置 Telegram Bot Token")
+			fmt.Println()
+			fmt.Println("方式一：环境变量")
+			fmt.Println("  export TELEGRAM_BOT_TOKEN='your-bot-token'")
+			fmt.Println()
+			fmt.Println("方式二：命令行参数")
+			fmt.Println("  ./lite-agent -telegram -key=xxx -token=your-bot-token")
+			fmt.Println()
+			fmt.Println("获取 Token：在 Telegram 中找到 @BotFather，发送 /newbot 创建机器人")
+			os.Exit(1)
+		}
+
+		botInstance, err := bot.New(bot.Config{
+			Token:        botToken,
+			APIKey:       finalAPIKey,
+			BaseURL:      finalBaseURL,
+			Model:        finalModel,
+			SystemPrompt: finalPrompt,
+			MaxSteps:     50,
+			Registry:     registry,
+			ProviderCfg:  providerCfg,
+		})
+		if err != nil {
+			fmt.Printf("❌ 创建 Telegram Bot 失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("=================================")
+		fmt.Println("  Go AI Agent - Telegram Bot")
+		fmt.Println("=================================")
+		fmt.Println()
+		fmt.Printf("📡 API: %s\n", finalBaseURL)
+		fmt.Printf("🤖 Model: %s\n", finalModel)
+		fmt.Println()
+		fmt.Println("已加载工具:")
+		fmt.Println("  - calculator   : 数学计算")
+		fmt.Println("  - system_info  : 系统信息")
+		fmt.Println("  - shell        : Shell 命令执行")
+		fmt.Println("  - file_edit    : 文件编辑")
+		fmt.Println("  - file_write   : 文件写入")
+		fmt.Println("  - file_diff    : 文件比较")
+		fmt.Println("  - file_read    : 文件读取")
+		fmt.Println("  - code_probe   : 项目结构探查")
+		fmt.Println("  - code_stats   : 代码行数统计")
+		fmt.Println("  - lsp          : LSP 代码智能")
+		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
+		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
+		fmt.Println("=================================")
+		fmt.Println()
+
+		if err := botInstance.Start(); err != nil {
+			fmt.Printf("❌ Telegram Bot 运行失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// === 交互式 CLI 模式 ===
 
 	// 会话恢复逻辑

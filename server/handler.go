@@ -205,6 +205,14 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 		h.handleGetLLMConfig()
 	case MsgTypeSetLLMConfig:
 		h.handleSetLLMConfig(msg.LLMConfig)
+	case MsgTypeGetTelegramConfig:
+		h.handleGetTelegramConfig()
+	case MsgTypeSetTelegramConfig:
+		h.handleSetTelegramConfig(msg.TelegramConfig)
+	case MsgTypeStartTelegramBot:
+		h.handleStartTelegramBot()
+	case MsgTypeStopTelegramBot:
+		h.handleStopTelegramBot()
 	default:
 		h.sendError("", "未知消息类型: "+msg.Type)
 	}
@@ -691,5 +699,59 @@ func (h *ConnectionHandler) handleSetLLMConfig(input *LLMConfigInfo) {
 	h.sendMessage(ServerMessage{
 		Type:      MsgTypeLLMConfig,
 		LLMConfig: &cfg,
+	})
+}
+
+// handleGetTelegramConfig 处理获取 Telegram Bot 配置请求
+func (h *ConnectionHandler) handleGetTelegramConfig() {
+	cfg := h.server.GetTelegramConfig()
+	h.sendMessage(ServerMessage{
+		Type:           MsgTypeTelegramConfig,
+		TelegramConfig: &cfg,
+	})
+}
+
+// handleSetTelegramConfig 处理设置 Telegram Bot Token
+func (h *ConnectionHandler) handleSetTelegramConfig(input *TelegramConfigInfo) {
+	if input == nil || input.Token == "" {
+		h.sendError("", "Telegram Bot Token 不能为空")
+		return
+	}
+
+	// 如果 Token 包含脱敏标记，保留旧 Token
+	if !containsMasked(input.Token) {
+		h.server.SetTelegramConfig(input.Token)
+	}
+
+	// 返回当前配置
+	cfg := h.server.GetTelegramConfig()
+	h.sendMessage(ServerMessage{
+		Type:           MsgTypeTelegramConfig,
+		TelegramConfig: &cfg,
+	})
+}
+
+// handleStartTelegramBot 处理启动 Telegram Bot
+func (h *ConnectionHandler) handleStartTelegramBot() {
+	if err := h.server.StartTelegramBot(); err != nil {
+		h.sendError("", err.Error())
+		return
+	}
+
+	cfg := h.server.GetTelegramConfig()
+	h.sendMessage(ServerMessage{
+		Type:           MsgTypeTelegramConfig,
+		TelegramConfig: &cfg,
+	})
+}
+
+// handleStopTelegramBot 处理停止 Telegram Bot
+func (h *ConnectionHandler) handleStopTelegramBot() {
+	h.server.StopTelegramBot()
+
+	cfg := h.server.GetTelegramConfig()
+	h.sendMessage(ServerMessage{
+		Type:           MsgTypeTelegramConfig,
+		TelegramConfig: &cfg,
 	})
 }

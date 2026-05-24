@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/bot"
 	"lite-agent/llm"
 	"lite-agent/session"
 	agentpkg "lite-agent/tools/agent"
@@ -52,6 +53,15 @@ type Server struct {
 	connMu   sync.RWMutex
 	conns    map[*ConnectionHandler]struct{}
 	upgrader websocket.Upgrader
+
+	// Telegram Bot 管理
+	tgBot        *bot.Bot
+	tgBotMu      sync.Mutex
+	tgBotCancel  context.CancelFunc
+	tgBotToken   string // 存储的 Bot Token（用于重启）
+	tgBotStatus  string // "stopped", "running", "error"
+	tgBotError   string
+	tgBotUsername string
 
 	// HTTP 服务器
 	httpServer *http.Server
@@ -115,6 +125,9 @@ func (s *Server) Start() error {
 // Shutdown 优雅关闭服务
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("正在关闭 WebSocket 服务...")
+
+	// 停止 Telegram Bot
+	s.StopTelegramBot()
 
 	// 关闭所有活跃连接
 	s.connMu.RLock()
@@ -281,4 +294,122 @@ func inferProviderName(baseURL, model string) string {
 
 func containsMasked(s string) bool {
 	return strings.Contains(s, "****")
+}
+
+// ============================================================================
+// Telegram Bot 管理
+// ============================================================================
+
+// GetTelegramConfig 返回 Telegram Bot 当前配置和状态
+func (s *Server) GetTelegramConfig() TelegramConfigInfo {
+	s.tgBotMu.Lock()
+	defer s.tgBotMu.Unlock()
+
+	// Token 脱敏
+	maskedToken := s.tgBotToken
+	if len(maskedToken) > 8 {
+		maskedToken = maskedToken[:4] + "****" + maskedToken[len(maskedToken)-4:]
+	}
+
+	status := s.tgBotStatus
+	if status == "" {
+		status = "stopped"
+	}
+
+	return TelegramConfigInfo{
+		Token:    maskedToken,
+		Status:   status,
+		Username: s.tgBotUsername,
+		Error:    s.tgBotError,
+	}
+}
+
+// SetTelegramConfig 保存 Telegram Bot Token
+func (s *Server) SetTelegramConfig(token string) {
+	s.tgBotMu.Lock()
+	defer s.tgBotMu.Unlock()
+	s.tgBotToken = token
+}
+
+// StartTelegramBot 启动 Telegram Bot（异步，不阻塞）
+// 需要先通过 SetTelegramConfig 设置 Token
+func (s *Server) StartTelegramBot() error {
+	s.tgBotMu.Lock()
+	defer s.tgBotMu.Unlock()
+
+	// 如果已在运行，先停止
+	if s.tgBotCancel != nil {
+		s.tgBotCancel()
+		s.tgBotCancel = nil
+		s.tgBot = nil
+		s.tgBotStatus = "stopped"
+	}
+
+	if s.tgBotToken == "" {
+		return fmt.Errorf("请先设置 Telegram Bot Token")
+	}
+
+	// 构建 Bot 配置（复用当前 LLM 配置和 registry）
+	cfg := bot.Config{
+		Token:        s.tgBotToken,
+		ProviderCfg:  s.provider,
+		SystemPrompt: s.systemPrompt,
+		MaxSteps:     s.maxSteps,
+		Registry:     s.registry,
+	}
+
+	b, err := bot.New(cfg)
+	if err != nil {
+		s.tgBotStatus = "error"
+		s.tgBotError = err.Error()
+		return fmt.Errorf("创建 Telegram Bot 失败: %w", err)
+	}
+
+	s.tgBot = b
+	s.tgBotUsername = "" // 启动后会从 API 获取
+	s.tgBotStatus = "running"
+	s.tgBotError = ""
+
+	// 在 goroutine 中启动（Start 是阻塞的）
+	_, cancel := context.WithCancel(context.Background())
+	s.tgBotCancel = cancel
+	currentBot := b
+
+	go func() {
+		log.Println("🤖 Telegram Bot 正在启动...")
+		if err := b.Start(); err != nil {
+			s.tgBotMu.Lock()
+			s.tgBotStatus = "error"
+			s.tgBotError = err.Error()
+			s.tgBotMu.Unlock()
+			log.Printf("❌ Telegram Bot 运行错误: %v", err)
+		}
+		// Bot 停止后清理状态（仅当仍是同一个 bot 实例时）
+		s.tgBotMu.Lock()
+		if s.tgBot == currentBot {
+			s.tgBotStatus = "stopped"
+			s.tgBotCancel = nil
+			s.tgBot = nil
+		}
+		s.tgBotMu.Unlock()
+		log.Println("🛑 Telegram Bot 已停止")
+	}()
+
+	return nil
+}
+
+// StopTelegramBot 停止 Telegram Bot
+func (s *Server) StopTelegramBot() {
+	s.tgBotMu.Lock()
+	defer s.tgBotMu.Unlock()
+
+	if s.tgBotCancel != nil {
+		s.tgBotCancel()
+		s.tgBotCancel = nil
+	}
+	s.tgBot = nil
+	s.tgBotStatus = "stopped"
+	s.tgBotError = ""
+	s.tgBotUsername = ""
+	log.Println("🛑 Telegram Bot 已停止")
 }
