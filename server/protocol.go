@@ -11,9 +11,10 @@ import "encoding/json"
 
 // ClientMessage 客户端发来的消息
 type ClientMessage struct {
-	Type      string `json:"type"`                 // 消息类型
-	Content   string `json:"content,omitempty"`    // chat 类型的用户输入
-	SessionID string `json:"session_id,omitempty"` // 目标会话 ID
+	Type      string         `json:"type"`                 // 消息类型
+	Content   string         `json:"content,omitempty"`    // chat 类型的用户输入
+	SessionID string         `json:"session_id,omitempty"` // 目标会话 ID
+	LLMConfig *LLMConfigInfo `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
 }
 
 // 支持的客户端消息类型常量
@@ -26,6 +27,8 @@ const (
 	MsgTypeGetTasks      = "get_tasks"      // 获取当前会话的任务列表
 	MsgTypeGetStatus     = "get_status"     // 获取服务状态
 	MsgTypeCancel        = "cancel"         // 取消指定 session 的执行
+	MsgTypeGetLLMConfig  = "get_llm_config" // 获取 LLM 配置
+	MsgTypeSetLLMConfig  = "set_llm_config" // 设置 LLM 配置
 )
 
 // ========== 服务端 → 客户端 ==========
@@ -47,6 +50,7 @@ type ServerMessage struct {
 	Status           *StatusInfo       `json:"status,omitempty"`            // 服务状态
 	Messages         []json.RawMessage `json:"messages,omitempty"`          // 历史消息列表（session_loaded 时）
 	Tasks            []TaskInfo        `json:"tasks,omitempty"`             // 任务列表（tasks 消息）
+	LLMConfig        *LLMConfigInfo    `json:"llm_config,omitempty"`        // LLM 配置（llm_config 消息）
 }
 
 // 支持的服务端消息类型常量
@@ -64,6 +68,7 @@ const (
 	MsgTypeSessionList      = "session_list"        // 会话列表
 	MsgTypeTasks            = "tasks"               // 当前会话的任务列表
 	MsgTypeStatus           = "status"              // 服务状态
+	MsgTypeLLMConfig        = "llm_config"          // LLM 配置信息
 )
 
 // ToolCallMsg 工具调用消息
@@ -101,6 +106,14 @@ type TaskInfo struct {
 	Status    string   `json:"status"`
 	Owner     string   `json:"owner,omitempty"`
 	BlockedBy []string `json:"blockedBy,omitempty"`
+}
+
+// LLMConfigInfo LLM 配置信息（发送给客户端 / 接收客户端更新）
+type LLMConfigInfo struct {
+	Provider string `json:"provider"`  // 预设提供者名称（openai/deepseek/moonshot/zhipu/qwen/ollama/custom）
+	APIKey   string `json:"api_key"`   // API Key（已脱敏显示）
+	BaseURL  string `json:"base_url"`  // API Base URL
+	Model    string `json:"model"`     // 模型名称
 }
 
 // ========== 辅助函数 ==========

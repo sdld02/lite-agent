@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/llm"
 	"lite-agent/session"
 	agentpkg "lite-agent/tools/agent"
 	taskpkg "lite-agent/tools/task"
@@ -36,6 +38,10 @@ type Server struct {
 	maxConns     int
 	startTime    time.Time
 
+	// LLM 配置（可在运行时通过 WebSocket 修改）
+	llmCfgMu  sync.RWMutex
+	llmConfig llm.OpenAIConfig
+
 	// 工具工厂列表（用于为每个连接创建独立工具实例）
 	toolFactories []ToolFactory
 
@@ -56,6 +62,12 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 	provider agent.LLMProvider, systemPrompt string, maxSteps int, toolFactories []ToolFactory,
 	taskMgr *taskpkg.Manager) *Server {
 
+	// 从 provider 提取初始配置
+	cfg := llm.OpenAIConfig{}
+	if openaiP, ok := provider.(*llm.OpenAIProvider); ok {
+		cfg = openaiP.GetConfig()
+	}
+
 	return &Server{
 		addr:          addr,
 		store:         store,
@@ -64,6 +76,7 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 		systemPrompt:  systemPrompt,
 		maxSteps:      maxSteps,
 		maxConns:      20, // 默认最大连接数
+		llmConfig:     cfg,
 		toolFactories: toolFactories,
 		taskMgr:       taskMgr,
 		startTime:     time.Now(),
@@ -175,4 +188,97 @@ func (s *Server) activeConnectionCount() int {
 	s.connMu.RLock()
 	defer s.connMu.RUnlock()
 	return len(s.conns)
+}
+
+// GetProvider 返回当前的 LLM Provider（线程安全）
+func (s *Server) GetProvider() agent.LLMProvider {
+	s.llmCfgMu.RLock()
+	defer s.llmCfgMu.RUnlock()
+	return s.provider
+}
+
+// GetLLMConfig 返回当前 LLM 配置（线程安全）
+func (s *Server) GetLLMConfig() LLMConfigInfo {
+	s.llmCfgMu.RLock()
+	defer s.llmCfgMu.RUnlock()
+
+	cfg := s.llmConfig
+	// API Key 脱敏：只显示前4后4位
+	maskedKey := cfg.APIKey
+	if len(maskedKey) > 8 {
+		maskedKey = maskedKey[:4] + "****" + maskedKey[len(maskedKey)-4:]
+	}
+
+	// 推断 provider 名称
+	providerName := inferProviderName(cfg.BaseURL, cfg.Model)
+
+	return LLMConfigInfo{
+		Provider: providerName,
+		APIKey:   maskedKey,
+		BaseURL:  cfg.BaseURL,
+		Model:    cfg.Model,
+	}
+}
+
+// SetLLMConfig 更新 LLM 配置（线程安全）
+// 返回更新后的 LLMConfigInfo
+func (s *Server) SetLLMConfig(input LLMConfigInfo) LLMConfigInfo {
+	s.llmCfgMu.Lock()
+	defer s.llmCfgMu.Unlock()
+
+	// 如果传入的 API Key 包含脱敏标记（****），保留原 API Key
+	if input.APIKey != "" && !containsMasked(input.APIKey) {
+		s.llmConfig.APIKey = input.APIKey
+	}
+	if input.BaseURL != "" {
+		s.llmConfig.BaseURL = input.BaseURL
+	}
+	if input.Model != "" {
+		s.llmConfig.Model = input.Model
+	}
+
+	// 重建 provider
+	s.provider = llm.NewOpenAIProvider(s.llmConfig)
+
+	log.Printf("⚙️  LLM 配置已更新: url=%s model=%s", s.llmConfig.BaseURL, s.llmConfig.Model)
+
+	// 直接构建返回值，不能调用 GetLLMConfig（会死锁：当前已持有写锁，GetLLMConfig 会尝试获取读锁）
+	cfg := s.llmConfig
+	maskedKey := cfg.APIKey
+	if len(maskedKey) > 8 {
+		maskedKey = maskedKey[:4] + "****" + maskedKey[len(maskedKey)-4:]
+	}
+	providerName := inferProviderName(cfg.BaseURL, cfg.Model)
+	return LLMConfigInfo{
+		Provider: providerName,
+		APIKey:   maskedKey,
+		BaseURL:  cfg.BaseURL,
+		Model:    cfg.Model,
+	}
+}
+
+// inferProviderName 根据 URL 和 model 推断 provider 名称
+func inferProviderName(baseURL, model string) string {
+	switch {
+	case baseURL == "":
+		return "custom"
+	case strings.Contains(baseURL, "api.openai.com"):
+		return "openai"
+	case strings.Contains(baseURL, "api.deepseek.com"):
+		return "deepseek"
+	case strings.Contains(baseURL, "api.moonshot.cn"):
+		return "moonshot"
+	case strings.Contains(baseURL, "open.bigmodel.cn"):
+		return "zhipu"
+	case strings.Contains(baseURL, "dashscope.aliyuncs.com"):
+		return "qwen"
+	case strings.Contains(baseURL, "localhost:11434"):
+		return "ollama"
+	default:
+		return "custom"
+	}
+}
+
+func containsMasked(s string) bool {
+	return strings.Contains(s, "****")
 }

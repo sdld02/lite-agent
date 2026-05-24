@@ -52,6 +52,15 @@ func NewOpenAIProvider(config OpenAIConfig) *OpenAIProvider {
 	}
 }
 
+// GetConfig 返回当前配置（只读），用于服务端读取当前 LLM 配置
+func (p *OpenAIProvider) GetConfig() OpenAIConfig {
+	return OpenAIConfig{
+		APIKey:  p.apiKey,
+		BaseURL: p.baseURL,
+		Model:   p.model,
+	}
+}
+
 // openAIRequest OpenAI API 请求结构
 type openAIRequest struct {
 	Model      string          `json:"model"`

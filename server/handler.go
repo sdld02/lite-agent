@@ -41,7 +41,6 @@ type ConnectionHandler struct {
 	conn     *websocket.Conn
 	store    *session.Store
 	registry *agentpkg.ToolRegistry
-	provider agent.LLMProvider
 	outChan  chan outMsg // 写队列，所有 WebSocket 写入通过此 channel 序列化
 
 	ctx    context.Context
@@ -67,7 +66,6 @@ func newConnectionHandler(conn *websocket.Conn, srv *Server) *ConnectionHandler 
 		conn:    conn,
 		store:   srv.store,
 		registry: srv.registry,
-		provider: srv.provider,
 		outChan: make(chan outMsg, 512), // 缓冲队列，解耦消息生产与 WebSocket 写入
 		ctx:     ctx,
 		cancel:  cancel,
@@ -95,7 +93,7 @@ func newConnectionHandler(conn *websocket.Conn, srv *Server) *ConnectionHandler 
 func (h *ConnectionHandler) createRunner(sess *session.Session) *SessionRunner {
 	ctx, cancel := context.WithCancel(h.ctx)
 
-	ag := agent.NewAgent(h.provider)
+	ag := agent.NewAgent(h.server.GetProvider())
 	ag.SetSystemPrompt(h.server.systemPrompt)
 	ag.SetMaxSteps(h.server.maxSteps)
 
@@ -203,6 +201,10 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 		h.handleGetStatus()
 	case MsgTypeCancel:
 		h.handleCancel(msg.SessionID)
+	case MsgTypeGetLLMConfig:
+		h.handleGetLLMConfig()
+	case MsgTypeSetLLMConfig:
+		h.handleSetLLMConfig(msg.LLMConfig)
 	default:
 		h.sendError("", "未知消息类型: "+msg.Type)
 	}
@@ -667,4 +669,27 @@ func sessionMetaToInfo(m session.Meta) SessionInfo {
 		MessageCount: m.MessageCount,
 		Preview:      m.Preview,
 	}
+}
+
+// handleGetLLMConfig 处理获取 LLM 配置请求
+func (h *ConnectionHandler) handleGetLLMConfig() {
+	cfg := h.server.GetLLMConfig()
+	h.sendMessage(ServerMessage{
+		Type:      MsgTypeLLMConfig,
+		LLMConfig: &cfg,
+	})
+}
+
+// handleSetLLMConfig 处理设置 LLM 配置请求
+func (h *ConnectionHandler) handleSetLLMConfig(input *LLMConfigInfo) {
+	if input == nil {
+		h.sendError("", "LLM 配置不能为空")
+		return
+	}
+
+	cfg := h.server.SetLLMConfig(*input)
+	h.sendMessage(ServerMessage{
+		Type:      MsgTypeLLMConfig,
+		LLMConfig: &cfg,
+	})
 }

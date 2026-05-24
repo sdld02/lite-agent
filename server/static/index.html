@@ -346,6 +346,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     <div id="toolbar">
       <span class="session-title" id="current-session-title">选择或创建一个任务</span>
       <div class="actions">
+        <button onclick="showConfig()" title="配置大模型和连接" style="font-size:16px;">⚙️ 设置</button>
         <button onclick="clearSession()" title="清空当前对话">清空对话</button>
         <button class="danger" onclick="deleteCurrentSession()" title="删除当前任务">删除任务</button>
       </div>
@@ -374,12 +375,34 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
 <div class="modal-overlay" id="config-modal" style="display:none">
   <div class="modal">
-    <h3>⚙️ 连接设置</h3>
-    <label>WebSocket 地址</label>
+    <h3>⚙️ 配置</h3>
+
+    <label>LLM 提供者</label>
+    <select id="cfg-provider" onchange="onProviderChange()" style="width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;outline:none;margin-top:4px;">
+      <option value="custom">自定义</option>
+      <option value="openai">OpenAI (GPT-4o)</option>
+      <option value="deepseek">DeepSeek (V4 Pro)</option>
+      <option value="moonshot">Moonshot (Kimi)</option>
+      <option value="zhipu">智谱 (GLM-4)</option>
+      <option value="qwen">通义千问</option>
+      <option value="ollama">Ollama (本地)</option>
+    </select>
+
+    <label>API Base URL</label>
+    <input id="cfg-base-url" type="text" placeholder="https://api.openai.com/v1">
+
+    <label>API Key</label>
+    <input id="cfg-api-key" type="password" placeholder="sk-...">
+
+    <label>模型名称</label>
+    <input id="cfg-model" type="text" placeholder="gpt-4o">
+
+    <label style="margin-top:16px;">WebSocket 地址</label>
     <input id="cfg-url" type="text" value="ws://localhost:9090/ws" placeholder="ws://localhost:9090/ws">
+
     <div class="modal-buttons">
       <button class="secondary" onclick="closeConfig()">取消</button>
-      <button class="primary" onclick="saveConfig()">连接</button>
+      <button class="primary" onclick="saveConfig()">保存并连接</button>
     </div>
   </div>
 </div>
@@ -389,8 +412,10 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   'use strict';
 
   // ========== STATE ==========
+  // 默认 WebSocket 地址从当前页面 URL 推导（同 IP 端口）
+  var defaultUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws';
   var state = {
-    serverUrl: localStorage.getItem('lite_agent_url') || 'ws://localhost:9090/ws',
+    serverUrl: localStorage.getItem('lite_agent_url') || defaultUrl,
     sessions: [],
     activeSessionId: null,
     currentTasks: {},  // key: sessionId (serverSessionId), value: tasks array
@@ -402,6 +427,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   // 每个 entry: { msgIdx, containerEl, lastType, lastEl, streaming }
   var streamStates = {};
 
+  // Per-session 待发送消息队列（key = 前端 session id）
+  // 当 serverSessionId 尚未就绪时，chat 消息暂存于此，等 session_info 回来后发送
+  var pendingMessages = {};
+
+  // Streaming 超时检测：如果 streaming 状态超过 5 分钟无任何事件，自动重置
+  var STREAM_TIMEOUT_MS = 300000;
+  var streamTimers = {};
+
   // 工具英文名 → 中文名映射
   var TOOL_NAMES_ZH = {
     calculator: '计算器', system_info: '系统信息', current_time: '当前时间',
@@ -411,6 +444,16 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     lsp: '代码智能', agent: '子Agent',
     task_create: '创建任务', task_update: '更新任务',
     task_list: '任务列表', task_get: '获取任务'
+  };
+
+  // LLM Provider 预设
+  var LLM_PROVIDERS = {
+    openai:   { base_url: 'https://api.openai.com/v1',       model: 'gpt-4o' },
+    deepseek: { base_url: 'https://api.deepseek.com/v1',      model: 'deepseek-v4-pro' },
+    moonshot: { base_url: 'https://api.moonshot.cn/v1',       model: 'moonshot-v1-8k' },
+    zhipu:    { base_url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4' },
+    qwen:     { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
+    ollama:   { base_url: 'http://localhost:11434/v1',        model: 'llama2' }
   };
 
   // ========== HELPERS ==========
@@ -500,8 +543,10 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     }
     if (idx < 0) return;
     var s = state.sessions[idx];
-    // 清理流式状态
+    // 清理流式状态和待发送消息
     if (streamStates[id]) delete streamStates[id];
+    if (pendingMessages[id]) delete pendingMessages[id];
+    if (streamTimers[id]) { clearTimeout(streamTimers[id]); delete streamTimers[id]; }
     state.sessions.splice(idx, 1);
     if (state.activeSessionId === id) {
       state.activeSessionId = state.sessions.length > 0 ? state.sessions[0].id : null;
@@ -525,6 +570,9 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     s.messageCount = 0;
     s.preview = '';
     s.serverSessionId = null;
+    // 清理待发送消息（旧 session 的消息不应发送到新 session）
+    if (pendingMessages[s.id]) delete pendingMessages[s.id];
+    if (streamTimers[s.id]) { clearTimeout(streamTimers[s.id]); delete streamTimers[s.id]; }
     renderMessages();
     sendWS({ type: 'new_session', session_id: s.id });
   };
@@ -749,6 +797,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   var reconnectAttempts = 0;
   var maxReconnectAttempts = 10;
   var connecting = false;
+  var wsOutbox = []; // 连接建立前暂存的消息队列
 
   function ensureConnected() {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
@@ -771,6 +820,13 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       connecting = false;
       reconnectAttempts = 0;
       setStatus('connected');
+      // 发送连接前缓存的消息
+      if (wsOutbox.length > 0) {
+        for (var i = 0; i < wsOutbox.length; i++) {
+          try { ws.send(wsOutbox[i]); } catch(e) { console.error('[ws] outbox send error:', e); }
+        }
+        wsOutbox = [];
+      }
     };
 
     ws.onmessage = function(event) {
@@ -795,7 +851,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
   function sendWS(obj) {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
-      toast('未连接到服务器', 'error');
+      // 连接未就绪，暂存消息，等连接后自动发送
+      wsOutbox.push(JSON.stringify(obj));
       ensureConnected();
       return;
     }
@@ -803,18 +860,36 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   }
 
   function handleServerMessage(msg) {
-    // 通过 session_id 路由到正确的 session（精确匹配，不做通用 fallback）
+    // 通过 session_id 路由到正确的 session
     var serverSid = msg.session_id || '';
     var targetSession = serverSid ? findSessionByServerId(serverSid) : null;
+
+    // 如果精确匹配失败，回退到正在 streaming 的活跃 session
+    // 这处理了 serverSessionId 尚未绑定（时序竞争）的情况
+    if (!targetSession && serverSid) {
+      var activeS = getActiveSession();
+      if (activeS && streamStates[activeS.id] && streamStates[activeS.id].streaming) {
+        targetSession = activeS;
+        // 顺便修复 serverSessionId 绑定（后续事件就能精确匹配了）
+        activeS.serverSessionId = serverSid;
+      }
+    }
 
     switch (msg.type) {
       case 'connected':
         setStatus('connected');
         sendWS({ type: 'list_sessions' });
+        // 连接成功后自动发送 LLM 配置（如果有保存的配置）
+        sendLLMConfig();
         if (msg.session) {
           var s = getActiveSession();
           if (s && s.messages.length === 0 && msg.session.message_count > 0) {
+            // 活跃 session 无消息但服务端有消息，加载历史
             sendWS({ type: 'load_session', session_id: msg.session.id });
+            // 确保 serverSessionId 绑定到服务端的 session
+            if (s.serverSessionId !== msg.session.id) {
+              s.serverSessionId = msg.session.id;
+            }
           } else if (!s) {
             state.sessions.push({
               id: msg.session.id, name: msg.session.preview ? msg.session.preview.slice(0, 30) : msg.session.id,
@@ -824,6 +899,16 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             state.activeSessionId = msg.session.id;
             renderSessions();
             if (msg.session.message_count > 0) sendWS({ type: 'load_session', session_id: msg.session.id });
+          } else if (s) {
+            // 活跃 session 已存在，确保 serverSessionId 与服务端一致
+            if (!s.serverSessionId || s.serverSessionId !== msg.session.id) {
+              s.serverSessionId = msg.session.id;
+              renderSessions();
+            }
+            // 如果服务端有消息但本地没有，加载
+            if (s.messages.length === 0 && msg.session.message_count > 0) {
+              sendWS({ type: 'load_session', session_id: msg.session.id });
+            }
           }
         }
         requestTasks();
@@ -851,6 +936,12 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         // error 可能来自流式执行，也可能是非流式错误
         if (targetSession && streamStates[targetSession.id] && streamStates[targetSession.id].streaming) {
           finishStream(targetSession.id, null, msg.error);
+        } else if (!targetSession) {
+          // session_id 不匹配任何前端 session，尝试清理活跃 session 的 streaming 状态
+          var activeS = getActiveSession();
+          if (activeS && streamStates[activeS.id] && streamStates[activeS.id].streaming) {
+            finishStream(activeS.id, null, msg.error);
+          }
         }
         toast(msg.error, 'error');
         break;
@@ -875,6 +966,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             infoTarget.preview = msg.session.preview || '';
             infoTarget.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
             renderSessions();
+            flushPendingMessages(infoTarget.id);
           }
         }
         break;
@@ -952,6 +1044,29 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         var activeS = getActiveSession();
         if (activeS && activeS.serverSessionId === serverSid) {
           renderTasks();
+        }
+        break;
+
+      case 'llm_config':
+        if (msg.llm_config) {
+          if (msg.llm_config.base_url) {
+            llmState.baseUrl = msg.llm_config.base_url;
+            localStorage.setItem('lite_agent_base_url', llmState.baseUrl);
+          }
+          if (msg.llm_config.model) {
+            llmState.model = msg.llm_config.model;
+            localStorage.setItem('lite_agent_model', llmState.model);
+          }
+          if (msg.llm_config.provider) {
+            llmState.provider = msg.llm_config.provider;
+            localStorage.setItem('lite_agent_provider', llmState.provider);
+          }
+          // API Key 是脱敏的，仅当本地没有时才用服务端值（通常不会更新 key）
+          if (msg.llm_config.api_key && !llmState.apiKey) {
+            llmState.apiKey = ''; // 脱敏 key 不保存
+          }
+          // 如果配置弹窗打开，更新弹窗中的值
+          updateConfigModalIfOpen();
         }
         break;
     }
@@ -1245,6 +1360,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     ss.containerEl = null;
     ss.lastType = '';
     ss.lastEl = null;
+    // 清除超时计时器
+    if (streamTimers[sessionId]) { clearTimeout(streamTimers[sessionId]); delete streamTimers[sessionId]; }
 
     var s = getSessionById(sessionId);
     if (!s) return;
@@ -1327,6 +1444,19 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   }
 
   // ========== USER INPUT ==========
+
+  // 发送指定 session 的待发送消息队列
+  function flushPendingMessages(frontendSessionId) {
+    var queue = pendingMessages[frontendSessionId];
+    if (!queue || queue.length === 0) return;
+    var target = getSessionById(frontendSessionId);
+    if (!target || !target.serverSessionId) return;
+    for (var i = 0; i < queue.length; i++) {
+      sendWS({ type: 'chat', content: queue[i].content, session_id: target.serverSessionId });
+    }
+    delete pendingMessages[frontendSessionId];
+  }
+
   window.onInputKey = function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1362,19 +1492,30 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var ss = getStreamState(s.id);
     ss.streaming = true;
 
+    // 启动 streaming 超时计时器，防止状态卡死
+    if (streamTimers[s.id]) clearTimeout(streamTimers[s.id]);
+    streamTimers[s.id] = setTimeout(function() {
+      var ss2 = getStreamState(s.id);
+      if (ss2.streaming) {
+        console.warn('Streaming timeout, auto-reset for session:', s.id);
+        finishStream(s.id, null, '响应超时，请重试');
+      }
+    }, STREAM_TIMEOUT_MS);
+
     renderMessages();
     renderSessions();
     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
     updateSendButton();
 
     ensureConnected();
-    var delay = (state.ws && state.ws.readyState === WebSocket.OPEN) ? 0 : 500;
-    var sendSessionId = s.id;  // 捕获前端 session ID，用于延迟后查找最新的 serverSessionId
-    setTimeout(function() {
-      var target = getSessionById(sendSessionId);
-      var sid = (target && target.serverSessionId) ? target.serverSessionId : '';
-      sendWS({ type: 'chat', content: text, session_id: sid });
-    }, delay);
+    var sendSessionId = s.id;
+    var target = getSessionById(sendSessionId);
+    var sid = (target && target.serverSessionId) ? target.serverSessionId : '';
+    // 即使 serverSessionId 尚未就绪也直接发送：
+    // - 有 serverSessionId → 精确路由
+    // - 无 serverSessionId → 发空值，后端用 activeSessionID 路由（new_session 已先处理）
+    // - 后端响应带 server session_id → streaming fallback 自动绑定
+    sendWS({ type: 'chat', content: text, session_id: sid });
   };
 
   // ========== STATUS ==========
@@ -1388,19 +1529,90 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   }
 
   // ========== CONFIG ==========
+  // LLM 配置状态（从 localStorage 加载）
+  var llmState = {
+    provider: localStorage.getItem('lite_agent_provider') || '',
+    apiKey: '',
+    baseUrl: localStorage.getItem('lite_agent_base_url') || '',
+    model: localStorage.getItem('lite_agent_model') || ''
+  };
+
   window.showConfig = function() {
     document.getElementById('cfg-url').value = state.serverUrl;
+    document.getElementById('cfg-provider').value = llmState.provider || 'custom';
+    document.getElementById('cfg-base-url').value = llmState.baseUrl;
+    document.getElementById('cfg-api-key').value = llmState.apiKey;
+    document.getElementById('cfg-model').value = llmState.model;
     document.getElementById('config-modal').style.display = 'flex';
+
+    // 首次打开且已连接时，尝试从服务端获取当前配置
+    if (!llmState.baseUrl && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      sendWS({ type: 'get_llm_config' });
+    }
   };
   window.closeConfig = function() { document.getElementById('config-modal').style.display = 'none'; };
+
+  window.onProviderChange = function() {
+    var p = document.getElementById('cfg-provider').value;
+    var preset = LLM_PROVIDERS[p];
+    if (preset) {
+      document.getElementById('cfg-base-url').value = preset.base_url;
+      document.getElementById('cfg-model').value = preset.model;
+    }
+    // custom 不清空，保留用户输入
+  };
+
   window.saveConfig = function() {
+    var oldUrl = state.serverUrl;
     state.serverUrl = document.getElementById('cfg-url').value.trim();
     localStorage.setItem('lite_agent_url', state.serverUrl);
+
+    // 保存 LLM 配置
+    llmState.provider = document.getElementById('cfg-provider').value;
+    llmState.baseUrl = document.getElementById('cfg-base-url').value.trim();
+    llmState.apiKey = document.getElementById('cfg-api-key').value.trim();
+    llmState.model = document.getElementById('cfg-model').value.trim();
+    localStorage.setItem('lite_agent_provider', llmState.provider);
+    localStorage.setItem('lite_agent_base_url', llmState.baseUrl);
+    localStorage.setItem('lite_agent_model', llmState.model);
+
     closeConfig();
-    reconnectAttempts = 0;
-    connecting = false;
-    connect();
+
+    // 如果 WebSocket 地址变了，重连
+    if (state.serverUrl !== oldUrl) {
+      reconnectAttempts = 0;
+      connecting = false;
+      if (state.ws) { try { state.ws.close(); } catch(e) {} state.ws = null; }
+      connect();
+    }
+
+    // 发送 LLM 配置到服务端（连接后会自动发送，如果已连接则立即发送）
+    sendLLMConfig();
   };
+
+  function sendLLMConfig() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (!llmState.baseUrl && !llmState.apiKey && !llmState.model) return;
+    sendWS({
+      type: 'set_llm_config',
+      llm_config: {
+        provider: llmState.provider,
+        api_key: llmState.apiKey,
+        base_url: llmState.baseUrl,
+        model: llmState.model
+      }
+    });
+  }
+
+  // 如果配置弹窗打开，同步更新其中的值
+  function updateConfigModalIfOpen() {
+    var modal = document.getElementById('config-modal');
+    if (modal.style.display === 'flex') {
+      document.getElementById('cfg-base-url').value = llmState.baseUrl || '';
+      document.getElementById('cfg-model').value = llmState.model || '';
+      document.getElementById('cfg-provider').value = llmState.provider || 'custom';
+    }
+  }
 
   // ========== TOAST ==========
   function toast(msg, type) {
@@ -1428,7 +1640,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     renderSessions();
     renderMessages();
 
-    if (!localStorage.getItem('lite_agent_url')) {
+    if (!localStorage.getItem('lite_agent_url') && !localStorage.getItem('lite_agent_base_url')) {
       showConfig();
     }
 
@@ -1460,6 +1672,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     header.addEventListener('dblclick', showConfig);
   });
 
+})();
+</script>
+</body>
+</html>
+})();
+</script>
+</body>
+</html>
 })();
 </script>
 </body>
