@@ -377,7 +377,7 @@ func (s *Server) StartTelegramBot() error {
 
 	go func() {
 		log.Println("🤖 Telegram Bot 正在启动...")
-		if err := b.Start(); err != nil {
+		if err := b.StartWithoutSignal(); err != nil {
 			s.tgBotMu.Lock()
 			s.tgBotStatus = "error"
 			s.tgBotError = err.Error()

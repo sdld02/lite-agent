@@ -11,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"lite-agent/agent"
 	"lite-agent/session"
@@ -26,9 +27,6 @@ type ToolFactory func() agent.Tool
 // Config Telegram Bot 配置
 type Config struct {
 	Token        string               // Bot Token
-	APIKey       string               // LLM API Key
-	BaseURL      string               // LLM Base URL
-	Model        string               // LLM Model
 	SystemPrompt string               // 系统提示词
 	MaxSteps     int                  // 最大执行步数
 	Registry     *agentpkg.ToolRegistry // 工具注册表（用于子 Agent 工具）
@@ -93,35 +91,56 @@ func New(cfg Config) (*Bot, error) {
 	}, nil
 }
 
-// Start 启动 Bot（长轮询模式，阻塞）
+// Start 启动 Bot（长轮询模式，阻塞），自动注册 SIGINT/SIGTERM 信号处理。
+// 如果 Bot 运行在已有信号管理的进程中（如 server 模式），请使用 StartWithoutSignal。
 func (b *Bot) Start() error {
+	return b.start(true)
+}
+
+// StartWithoutSignal 启动 Bot（长轮询模式，阻塞），不注册信号处理。
+// 适用于上层（如 server）已统一管理信号处理的场景。
+func (b *Bot) StartWithoutSignal() error {
+	return b.start(false)
+}
+
+func (b *Bot) start(withSignalHandler bool) error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	updates := b.api.GetUpdatesChan(u)
 
-	// 优雅关闭
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	log.Println("🚀 Telegram Bot 已启动，等待消息...")
 
-	for {
-		select {
-		case update := <-updates:
-			if update.Message == nil {
-				// 忽略非消息更新（如回调查询等）
-				continue
-			}
-			go b.handleMessage(update.Message)
+	if withSignalHandler {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-		case <-sigChan:
-			log.Println("🛑 收到退出信号，正在关闭 Telegram Bot...")
-			b.saveAllSessions()
-			b.api.StopReceivingUpdates()
-			return nil
+		for {
+			select {
+			case update := <-updates:
+				if update.Message == nil {
+					continue
+				}
+				go b.handleMessage(update.Message)
+
+			case <-sigChan:
+				log.Println("🛑 收到退出信号，正在关闭 Telegram Bot...")
+				b.saveAllSessions()
+				b.api.StopReceivingUpdates()
+				return nil
+			}
 		}
 	}
+
+	// 无信号处理模式
+	for update := range updates {
+		if update.Message == nil {
+			continue
+		}
+		go b.handleMessage(update.Message)
+	}
+
+	return nil
 }
 
 // handleMessage 处理接收到的消息
@@ -218,7 +237,13 @@ func (b *Bot) handleChat(chatID int64, text string) {
 	}()
 
 	// 发送"正在思考"消息（稍后会被编辑为实际响应）
-	thinkingMsg, _ := b.api.Send(tgbotapi.NewMessage(chatID, "🤔 思考中..."))
+	// Bug 修复 #2: 检查发送结果，避免 nil
+	thinkingMsg, err := b.api.Send(tgbotapi.NewMessage(chatID, "🤔 思考中..."))
+	if err != nil || thinkingMsg.MessageID == 0 {
+		log.Printf("发送「思考中」消息失败 (chat=%d): %v", chatID, err)
+		b.sendText(chatID, "❌ 服务暂时不可用，请稍后重试")
+		return
+	}
 
 	// 累积内容
 	var contentBuilder strings.Builder
@@ -226,8 +251,25 @@ func (b *Bot) handleChat(chatID int64, text string) {
 	var lastEditTime time.Time
 	const editInterval = 800 * time.Millisecond // 编辑间隔
 
+	// 工具调用后需要创建新的"思考中"消息
+	var needNewBubble bool
+
 	// 工具调用信息
 	var pendingToolCalls []toolInfo
+
+	// 启动新的 thinking bubble：发送新消息并重置累积器
+	startNewBubble := func() {
+		newMsg, err := b.api.Send(tgbotapi.NewMessage(chatID, "🤔 ..."))
+		if err != nil || newMsg.MessageID == 0 {
+			log.Printf("创建新气泡失败 (chat=%d): %v", chatID, err)
+			return
+		}
+		thinkingMsg = newMsg
+		contentBuilder.Reset()
+		reasoningBuilder.Reset()
+		lastEditTime = time.Time{} // 重置限频计时，让新消息立即显示
+		needNewBubble = false
+	}
 
 	// editOrThrottle 限频编辑消息
 	editOrThrottle := func(final bool) {
@@ -237,22 +279,24 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		}
 		lastEditTime = now
 
-		text := buildDisplayText(contentBuilder.String(), reasoningBuilder.String(), pendingToolCalls)
-		if text == "" {
+		rawText := buildDisplayText(contentBuilder.String(), reasoningBuilder.String(), pendingToolCalls)
+		if rawText == "" {
 			return
 		}
 
-		// Telegram 消息限制 4096 字符
-		if len(text) > 4000 {
-			text = text[:4000] + "\n\n...（内容过长已截断）"
+		// Bug 修复 #3: 按 rune 截断，避免破坏 UTF-8 多字节字符
+		text := truncateByRunes(rawText, 4000)
+		if len(text) < len(rawText) {
+			text += "\n\n...（内容过长已截断）"
 		}
 
 		edit := tgbotapi.NewEditMessageText(chatID, thinkingMsg.MessageID, text)
-		edit.ParseMode = tgbotapi.ModeMarkdown
+		edit.ParseMode = tgbotapi.ModeMarkdownV2
 		if _, err := b.api.Send(edit); err != nil {
 			// 编辑失败（可能内容未变或消息太旧），忽略
-			if !strings.Contains(err.Error(), "message is not modified") {
-				log.Printf("编辑消息失败: %v", err)
+			if !strings.Contains(err.Error(), "message is not modified") &&
+				!strings.Contains(err.Error(), "message to edit not found") {
+				log.Printf("编辑消息失败 (chat=%d): %v", chatID, err)
 			}
 		}
 	}
@@ -261,34 +305,45 @@ func (b *Bot) handleChat(chatID int64, text string) {
 	response, err := runner.ag.RunStream(ctx, text, func(event agent.StreamEvent) {
 		switch event.Type {
 		case agent.EventContent:
+			if needNewBubble {
+				startNewBubble()
+			}
 			contentBuilder.WriteString(event.Content)
 			editOrThrottle(false)
 
 		case agent.EventReasoning:
+			if needNewBubble {
+				startNewBubble()
+			}
 			reasoningBuilder.WriteString(event.Content)
 			editOrThrottle(false)
 
 		case agent.EventToolCallStart:
+			// 先强制刷新流式内容到「思考中」消息，确保在工具消息之前到达
+			editOrThrottle(true)
+
 			pendingToolCalls = append(pendingToolCalls, toolInfo{
 				name: event.ToolName,
 				args: event.ToolArgs,
 			})
 			// 工具调用开始，发送单独消息
-			toolText := fmt.Sprintf("🔧 调用工具: *%s*", event.ToolName)
+			toolName := escapeMarkdownV2(event.ToolName)
+			toolText := fmt.Sprintf("🔧 调用工具: *%s*", toolName)
 			if event.ToolName == "shell" {
 				if intent, ok := event.ToolArgs["intent"]; ok {
-					toolText += fmt.Sprintf("\n   意图: %s", intent)
+					toolText += fmt.Sprintf("\n   意图: %s", escapeMarkdownV2(fmt.Sprintf("%v", intent)))
 				}
 				if cmd, ok := event.ToolArgs["command"]; ok {
-					toolText += fmt.Sprintf("\n   命令: `%s`", cmd)
+					cmdStr := fmt.Sprintf("%v", cmd)
+					toolText += fmt.Sprintf("\n   命令: `%s`", escapeMarkdownV2(cmdStr))
 				}
 			}
 			b.sendMarkdown(chatID, toolText)
 
 		case agent.EventToolCallEnd:
-			// 从 pending 中移除
-			for i, tc := range pendingToolCalls {
-				if tc.name == event.ToolName {
+			// Bug 修复 #6: 从 pending 中正确移除（倒序遍历，匹配最后一个同名工具）
+			for i := len(pendingToolCalls) - 1; i >= 0; i-- {
+				if pendingToolCalls[i].name == event.ToolName {
 					pendingToolCalls = append(pendingToolCalls[:i], pendingToolCalls[i+1:]...)
 					break
 				}
@@ -299,12 +354,14 @@ func (b *Bot) handleChat(chatID int64, text string) {
 				} else {
 					// 工具结果太长则截断
 					result := event.ToolResult.Content
-					if len(result) > 500 {
-						result = result[:500] + "..."
+					if utf8.RuneCountInString(result) > 500 {
+						result = truncateByRunes(result, 500) + "..."
 					}
 					b.sendText(chatID, fmt.Sprintf("✅ 完成: %s", result))
 				}
 			}
+			// 工具调用后，下一轮 LLM 输出应该从新消息开始（而非继续编辑旧消息）
+			needNewBubble = true
 
 		case agent.EventFlush:
 			// 刷新当前内容
@@ -323,18 +380,18 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		return
 	}
 
-	// 最终响应：编辑"思考中"消息为完整响应
-	finalText := buildDisplayText(response, "", nil)
-	// 如果没有流式内容积累（非流式工具调用场景），使用最终 response
-	if contentBuilder.Len() == 0 && finalText == "" {
-		finalText = response
+	// Bug 修复 #4: 使用流式累积的内容构建最终响应（保留推理过程）
+	finalText := buildDisplayText(contentBuilder.String(), reasoningBuilder.String(), nil)
+	// 如果流式过程中没有任何内容积累，回退到 RunStream 的返回值
+	if finalText == "" {
+		finalText = escapeMarkdownV2(response)
 	}
 	if finalText == "" {
 		finalText = "（无内容）"
 	}
 
 	// 长消息分段发送
-	if len(finalText) > 4000 {
+	if utf8.RuneCountInString(finalText) > 4000 {
 		// 删除"思考中"消息
 		b.api.Send(tgbotapi.NewDeleteMessage(chatID, thinkingMsg.MessageID))
 		// 分段发送
@@ -343,9 +400,9 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		}
 	} else {
 		edit := tgbotapi.NewEditMessageText(chatID, thinkingMsg.MessageID, finalText)
-		edit.ParseMode = tgbotapi.ModeMarkdown
+		edit.ParseMode = tgbotapi.ModeMarkdownV2
 		if _, err := b.api.Send(edit); err != nil {
-			// 编辑失败，直接发送
+			// 编辑失败（可能消息已被删除），直接发送
 			b.sendMarkdown(chatID, finalText)
 		}
 	}
@@ -468,13 +525,13 @@ func (b *Bot) listSessions(chatID int64) {
 			displayTime = displayTime[:16]
 		}
 		sb.WriteString(fmt.Sprintf("%s`%s`\n", marker, m.ID[:8]))
-		sb.WriteString(fmt.Sprintf("   %s | %d 条消息\n", displayTime, m.MessageCount))
+		sb.WriteString(fmt.Sprintf("   %s \\| %d 条消息\n", displayTime, m.MessageCount))
 		if m.Preview != "" {
 			preview := m.Preview
-			if len(preview) > 60 {
-				preview = preview[:60] + "..."
+			if utf8.RuneCountInString(preview) > 60 {
+				preview = truncateByRunes(preview, 60) + "..."
 			}
-			sb.WriteString(fmt.Sprintf("   _%s_\n", preview))
+			sb.WriteString(fmt.Sprintf("   _%s_\n", escapeMarkdownV2(preview)))
 		}
 		sb.WriteString("\n")
 	}
@@ -562,28 +619,33 @@ func (b *Bot) sendText(chatID int64, text string) {
 	}
 }
 
-// sendMarkdown 发送 Markdown 格式消息
+// sendMarkdown 发送 MarkdownV2 格式消息，自动处理分段和转义回退
 func (b *Bot) sendMarkdown(chatID int64, text string) {
-	if len(text) > 4000 {
+	if utf8.RuneCountInString(text) > 4000 {
 		// 分段发送
-		for _, chunk := range splitMessage(text, 4000) {
-			msg := tgbotapi.NewMessage(chatID, chunk)
-			msg.ParseMode = tgbotapi.ModeMarkdown
-			if _, err := b.api.Send(msg); err != nil {
-				// Markdown 解析失败时回退到纯文本
-				msg.ParseMode = ""
-				b.api.Send(msg)
+		for i, chunk := range splitMessage(text, 4000) {
+			if i > 0 {
+				// 分段间短暂延迟，避免被 Telegram 限频
+				time.Sleep(200 * time.Millisecond)
 			}
+			b.sendSingleMarkdown(chatID, chunk)
 		}
 		return
 	}
+	b.sendSingleMarkdown(chatID, text)
+}
 
+// sendSingleMarkdown 发送单条 MarkdownV2 消息（不超过 4000 字符）
+func (b *Bot) sendSingleMarkdown(chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
 	if _, err := b.api.Send(msg); err != nil {
-		// Markdown 解析失败时回退到纯文本
+		log.Printf("MarkdownV2 发送失败 (chat=%d, len=%d): %v", chatID, len(text), err)
+		// 回退到纯文本
 		msg.ParseMode = ""
-		b.api.Send(msg)
+		if _, err2 := b.api.Send(msg); err2 != nil {
+			log.Printf("纯文本回退也失败 (chat=%d): %v", chatID, err2)
+		}
 	}
 }
 
@@ -623,21 +685,56 @@ func (b *Bot) saveAllSessions() {
 	log.Println("💾 所有会话已保存")
 }
 
-// buildDisplayText 构建显示文本（整合内容和推理）
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+// escapeMarkdownV2 转义 Telegram MarkdownV2 特殊字符
+// 参考: https://core.telegram.org/bots/api#markdownv2-style
+// 需要转义的字符: _ * [ ] ( ) ~ ` > # + - = | { } . !
+func escapeMarkdownV2(s string) string {
+	// 按顺序替换，注意 \\ 必须在最前面
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
+	)
+	return replacer.Replace(s)
+}
+
+// buildDisplayText 构建显示文本（整合内容和推理过程）
+// 用户内容自动进行 MarkdownV2 转义
 func buildDisplayText(content, reasoning string, tools []toolInfo) string {
 	var sb strings.Builder
 
-	// 推理内容（灰色/折叠）
+	// Bug 修复 #5: 推理内容中的 ``` 会破坏代码块格式，替换为三个单引号
 	if reasoning != "" {
 		sb.WriteString("💭 *思考过程:*\n")
 		sb.WriteString("```\n")
-		sb.WriteString(reasoning)
+		safeReasoning := strings.ReplaceAll(reasoning, "```", "'''")
+		sb.WriteString(safeReasoning)
 		sb.WriteString("\n```\n\n")
 	}
 
-	// 正文内容
+	// Bug 修复 #1: LLM 输出内容进行 MarkdownV2 转义（- 等字符必须转义）
 	if content != "" {
-		sb.WriteString(content)
+		sb.WriteString(escapeMarkdownV2(content))
 	}
 
 	// 正在执行的工具
@@ -646,16 +743,25 @@ func buildDisplayText(content, reasoning string, tools []toolInfo) string {
 			sb.WriteString("\n\n")
 		}
 		for _, t := range tools {
-			sb.WriteString(fmt.Sprintf("⏳ 正在执行: *%s*\n", t.name))
+			sb.WriteString(fmt.Sprintf("⏳ 正在执行: *%s*\n", escapeMarkdownV2(t.name)))
 		}
 	}
 
 	return sb.String()
 }
 
-// splitMessage 按最大长度分割消息（尽量在换行处分割）
+// truncateByRunes 按 rune 安全截断字符串
+func truncateByRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes])
+}
+
+// splitMessage 按最大 rune 数分割消息（尽量在换行处分割）
 func splitMessage(text string, maxLen int) []string {
-	if len(text) <= maxLen {
+	if utf8.RuneCountInString(text) <= maxLen {
 		return []string{text}
 	}
 
@@ -664,23 +770,20 @@ func splitMessage(text string, maxLen int) []string {
 
 	current := ""
 	for _, line := range lines {
-		if len(current)+len(line)+1 > maxLen {
-			if current != "" {
-				chunks = append(chunks, current)
-				current = ""
-			}
-			// 如果单行超过 maxLen，需要再分割
-			for len(line) > maxLen {
-				chunks = append(chunks, line[:maxLen])
-				line = line[maxLen:]
-			}
+		// 如果单行超过 maxLen，需要按 rune 再分割
+		for utf8.RuneCountInString(line) > maxLen {
+			runes := []rune(line)
+			chunks = append(chunks, string(runes[:maxLen]))
+			line = string(runes[maxLen:])
+		}
+
+		if current == "" {
+			current = line
+		} else if utf8.RuneCountInString(current)+1+utf8.RuneCountInString(line) > maxLen {
+			chunks = append(chunks, current)
 			current = line
 		} else {
-			if current == "" {
-				current = line
-			} else {
-				current += "\n" + line
-			}
+			current += "\n" + line
 		}
 	}
 

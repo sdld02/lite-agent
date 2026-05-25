@@ -378,9 +378,6 @@ func main() {
 
 		botInstance, err := bot.New(bot.Config{
 			Token:        botToken,
-			APIKey:       finalAPIKey,
-			BaseURL:      finalBaseURL,
-			Model:        finalModel,
 			SystemPrompt: finalPrompt,
 			MaxSteps:     50,
 			Registry:     registry,
