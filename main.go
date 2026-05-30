@@ -20,6 +20,7 @@ import (
 	"lite-agent/server"
 	"lite-agent/session"
 	"lite-agent/tools"
+	"lite-agent/tools/skill"
 
 	"github.com/charmbracelet/glamour"
 )
@@ -71,11 +72,11 @@ func getSystemInfo() map[string]interface{} {
 	return info
 }
 
-// buildDefaultSystemPrompt 构建默认系统提示词（包含动态系统信息）
-func buildDefaultSystemPrompt() string {
+// buildDefaultSystemPrompt 构建默认系统提示词（包含动态系统信息和技能列表）
+func buildDefaultSystemPrompt(skillsPrompt string) string {
 	sysInfo := getSystemInfo()
 
-	return fmt.Sprintf(`你是一个智能助手，运行在以下系统环境中：
+	basePrompt := fmt.Sprintf(`你是一个智能助手，运行在以下系统环境中：
 
 ## 系统信息
 - 操作系统: %s
@@ -104,12 +105,16 @@ func buildDefaultSystemPrompt() string {
 - task_update: 更新任务状态
 - task_list: 列出所有任务
 - task_get: 获取任务详情
+- skill: 调用技能（斜杠命令），如 commit、review-pr、explain-code、plan 等
+
+%s
 
 ## 行为准则
 1. 当用户请求需要使用工具时，请调用相应的工具来完成任务
 2. 如果用户的问题不需要使用工具，请直接回答
 3. 执行 shell 命令时，注意当前操作系统是 %s，使用适合该系统的命令
-4. 请用中文回复用户`,
+4. 当用户引用"斜杠命令"或"/<something>"时（如 /commit、/review-pr），应调用 skill 工具
+5. 请用中文回复用户`,
 		sysInfo["os"],
 		sysInfo["arch"],
 		sysInfo["cpus"],
@@ -118,8 +123,11 @@ func buildDefaultSystemPrompt() string {
 		sysInfo["user"],
 		sysInfo["homeDir"],
 		sysInfo["workDir"],
+		skillsPrompt,
 		sysInfo["os"],
 	)
+
+	return basePrompt
 }
 
 func main() {
@@ -235,14 +243,6 @@ func main() {
 	ag := agent.NewAgent(providerCfg)
 	ag.SetMaxSteps(50)
 
-	// 设置系统提示词 - 始终使用动态构建的提示词，并允许自定义提示词作为补充
-	finalPrompt := buildDefaultSystemPrompt()
-	if *systemPrompt != "" {
-		// 如果提供了自定义提示词，则将其附加到默认提示词后面
-		finalPrompt = *systemPrompt + "\n\n" + finalPrompt
-	}
-	ag.SetSystemPrompt(finalPrompt)
-
 	// 创建工具注册表（子Agent系统需要）
 	registry := tools.NewToolRegistry()
 	registry.Register("calculator", func() agent.Tool { return tools.NewCalculatorTool() })
@@ -259,6 +259,22 @@ func main() {
 	registry.Register("task_update", func() agent.Tool { return tools.NewTaskUpdateTool() })
 	registry.Register("task_list", func() agent.Tool { return tools.NewTaskListTool() })
 	registry.Register("task_get", func() agent.Tool { return tools.NewTaskGetTool() })
+
+	// 获取项目根目录（用于加载项目级技能）
+	projectRoot, _ := os.Getwd()
+
+	// 创建 Skill 工具（需要在 registry 之后，因为 fork 模式需要 registry）
+	skillTool := tools.NewSkillTool(homeDir, projectRoot, registry, providerCfg)
+	registry.Register("skill", func() agent.Tool { return skillTool })
+
+	// 设置系统提示词 - 始终使用动态构建的提示词，并允许自定义提示词作为补充
+	skillsPrompt := skill.FormatSkillsPrompt(skillTool.GetSkills(), 3000)
+	finalPrompt := buildDefaultSystemPrompt(skillsPrompt)
+	if *systemPrompt != "" {
+		// 如果提供了自定义提示词，则将其附加到默认提示词后面
+		finalPrompt = *systemPrompt + "\n\n" + finalPrompt
+	}
+	ag.SetSystemPrompt(finalPrompt)
 
 	// 注册内置工具
 	ag.AddTool(tools.NewCalculatorTool())
@@ -278,6 +294,8 @@ func main() {
 	ag.AddTool(tools.NewTaskGetTool())
 	// Agent 子Agent工具
 	ag.AddTool(tools.NewAgentTool(registry, providerCfg))
+	// Skill 技能工具
+	ag.AddTool(skillTool)
 
 	// 初始化会话存储
 	store, err := session.NewStore(filepath.Join(homeDir, ".lite-agent", "sessions"))
@@ -303,6 +321,11 @@ func main() {
 			func() agent.Tool { return tools.NewTaskUpdateTool() },
 			func() agent.Tool { return tools.NewTaskListTool() },
 			func() agent.Tool { return tools.NewTaskGetTool() },
+			// Skill 技能工具（每个连接独立实例，共享 filesystem）
+			func() agent.Tool {
+				workDir, _ := os.Getwd()
+				return tools.NewSkillTool(homeDir, workDir, registry, providerCfg)
+			},
 			// Agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
 		}
 
@@ -346,6 +369,8 @@ func main() {
 		fmt.Println("  - lsp          : LSP 代码智能")
 		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
+		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
+		fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -408,6 +433,7 @@ func main() {
 		fmt.Println("  - lsp          : LSP 代码智能")
 		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
+		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -495,6 +521,8 @@ func main() {
 	fmt.Println("  - lsp          : LSP 代码智能")
 	fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 	fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
+	fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
+	fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
