@@ -330,6 +330,69 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .telegram-actions .tg-stop:hover { background:rgba(248,113,113,0.1); }
 .telegram-actions .tg-start:disabled, .telegram-actions .tg-stop:disabled { opacity:0.4; cursor:not-allowed; }
 
+/* ====== MCP 服务器配置样式 ====== */
+.mcp-section { margin-top:20px; padding-top:16px; border-top:1px solid var(--border); }
+.mcp-section .section-title { font-size:14px; font-weight:600; margin-bottom:12px; display:flex; align-items:center; gap:6px; }
+.mcp-server-list { margin-bottom:8px; }
+.mcp-server-card {
+  border:1px solid var(--border); border-radius:var(--radius-sm); margin-bottom:6px;
+  background:var(--bg); overflow:hidden;
+}
+.mcp-server-card .card-header {
+  display:flex; align-items:center; padding:8px 12px; gap:8px; cursor:default;
+}
+.mcp-server-card .card-name { font-size:13px; font-weight:600; color:var(--text); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mcp-server-card .card-cmd { font-size:11px; color:var(--text-muted); font-family:var(--font-mono); }
+.mcp-server-card .card-badge {
+  font-size:10px; padding:2px 7px; border-radius:10px; background:var(--surface);
+  color:var(--text-muted); border:1px solid var(--border); white-space:nowrap; flex-shrink:0;
+}
+.mcp-server-card .card-actions { display:flex; gap:4px; flex-shrink:0; }
+.mcp-server-card .card-actions button {
+  padding:3px 8px; border-radius:var(--radius-sm); font-size:11px; cursor:pointer;
+  border:1px solid var(--border); background:transparent; color:var(--text-secondary); transition:all 0.15s;
+}
+.mcp-server-card .card-actions button:hover { border-color:var(--accent); color:var(--accent); }
+.mcp-server-card .card-actions .btn-delete:hover { border-color:var(--error); color:var(--error); }
+.mcp-add-btn {
+  width:100%; padding:8px; border-radius:var(--radius-sm); font-size:12px; cursor:pointer;
+  border:1px dashed var(--border); background:transparent; color:var(--text-muted); transition:all 0.2s;
+}
+.mcp-add-btn:hover { border-color:var(--accent); color:var(--accent); }
+.mcp-hint { font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4; }
+
+/* MCP 服务器编辑弹层 */
+.mcp-modal-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:200;
+  display:flex; align-items:center; justify-content:center; animation:fadeIn 0.2s ease;
+}
+.mcp-modal {
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:24px; width:480px; max-width:94vw; max-height:88vh; overflow-y:auto;
+}
+.mcp-modal h3 { margin-bottom:16px; font-size:16px; }
+.mcp-modal label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; margin-top:12px; }
+.mcp-modal input, .mcp-modal textarea {
+  width:100%; padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--bg); color:var(--text); font-size:13px; font-family:var(--font-mono); outline:none; box-sizing:border-box;
+}
+.mcp-modal input:focus, .mcp-modal textarea:focus { border-color:var(--accent); }
+.mcp-modal textarea { resize:vertical; min-height:72px; line-height:1.5; }
+.env-kv-list { margin-bottom:4px; }
+.env-kv-row { display:flex; gap:6px; margin-bottom:6px; align-items:center; }
+.env-kv-row input { flex:1; }
+.env-kv-row .kv-sep { color:var(--text-muted); font-size:12px; flex-shrink:0; }
+.env-kv-row .btn-del-env {
+  padding:6px 10px; border-radius:var(--radius-sm); font-size:11px; cursor:pointer;
+  border:1px solid var(--border); background:transparent; color:var(--text-muted); flex-shrink:0; transition:all 0.15s;
+}
+.env-kv-row .btn-del-env:hover { border-color:var(--error); color:var(--error); }
+.btn-add-env {
+  padding:5px 12px; border-radius:var(--radius-sm); font-size:11px; cursor:pointer;
+  border:1px dashed var(--border); background:transparent; color:var(--text-muted); transition:all 0.2s;
+}
+.btn-add-env:hover { border-color:var(--accent); color:var(--accent); }
+
 /* ====== Ask User Question 提问卡片样式 ====== */
 .question-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:200;
@@ -555,9 +618,45 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       </div>
     </div>
 
+    <!-- MCP 服务器配置 -->
+    <div class="mcp-section">
+      <div class="section-title">🔌 MCP 服务器</div>
+      <div class="mcp-server-list" id="mcp-server-list">
+        <div style="font-size:12px;color:var(--text-muted);padding:4px 0;">加载中...</div>
+      </div>
+      <button class="mcp-add-btn" onclick="showMCPServerForm(-1)">＋ 添加 MCP 服务器</button>
+      <div class="mcp-hint">仅管理用户级配置（~/.lite-agent/mcp.json），保存后立即生效。</div>
+    </div>
+
     <div class="modal-buttons">
       <button class="secondary" onclick="closeConfig()">取消</button>
       <button class="primary" onclick="saveConfig()">保存并连接</button>
+    </div>
+  </div>
+</div>
+
+<!-- MCP 服务器编辑弹层 -->
+<div class="mcp-modal-overlay" id="mcp-server-modal" style="display:none">
+  <div class="mcp-modal">
+    <h3 id="mcp-form-title">添加 MCP 服务器</h3>
+    <input type="hidden" id="mcp-edit-index" value="-1">
+
+    <label>服务器名称 <span style="color:var(--error)">*</span></label>
+    <input id="mcp-name" type="text" placeholder="如: filesystem, github, postgres">
+
+    <label>命令 <span style="color:var(--error)">*</span></label>
+    <input id="mcp-command" type="text" placeholder="如: npx, uvx, node, /path/to/binary">
+
+    <label>参数（每行一个）</label>
+    <textarea id="mcp-args" rows="3" placeholder="-y&#10;@anthropic-ai/mcp-server-filesystem&#10;/path/to/dir"></textarea>
+
+    <label>环境变量</label>
+    <div class="env-kv-list" id="mcp-env-list"></div>
+    <button class="btn-add-env" onclick="addEnvRow('','')">＋ 添加环境变量</button>
+
+    <div class="modal-buttons">
+      <button class="secondary" onclick="closeMCPServerForm()">取消</button>
+      <button class="primary" onclick="saveMCPServer()">保存</button>
     </div>
   </div>
 </div>
@@ -1253,6 +1352,12 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             tgState.token = msg.telegram_config.token;
           }
           updateTgStatusUI();
+        }
+        break;
+      case 'mcp_config':
+        if (msg.mcp_config) {
+          mcpState.servers = msg.mcp_config.servers || [];
+          renderMCPServers();
         }
         break;
     }
@@ -2002,6 +2107,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     }
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       sendWS({ type: 'get_telegram_config' });
+      sendWS({ type: 'get_mcp_config' });
     }
   };
   window.closeConfig = function() { document.getElementById('config-modal').style.display = 'none'; };
@@ -2047,6 +2153,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
     // 发送 LLM 配置到服务端（连接后会自动发送，如果已连接则立即发送）
     sendLLMConfig();
+    // 发送 MCP 配置到服务端
+    sendMCPConfig();
   };
 
   function sendLLMConfig() {
@@ -2155,6 +2263,138 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   // 请求 Telegram Bot 当前状态（连接建立后调用）
   function requestTelegramConfig() {
     sendWS({ type: 'get_telegram_config' });
+  }
+
+  // ========== MCP 服务器配置 ==========
+
+  var mcpState = { servers: [] };
+
+  // 渲染 MCP 服务器卡片列表
+  function renderMCPServers() {
+    var list = document.getElementById('mcp-server-list');
+    if (!list) return;
+    if (!mcpState.servers || mcpState.servers.length === 0) {
+      list.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:4px 0;">暂无配置，点击下方按钮添加。</div>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < mcpState.servers.length; i++) {
+      var srv = mcpState.servers[i];
+      var argCount = (srv.args && srv.args.length) ? srv.args.length : 0;
+      var envCount = srv.env ? Object.keys(srv.env).length : 0;
+      var badges = '';
+      if (argCount > 0) badges += '<span class="card-badge">' + argCount + ' 个参数</span>';
+      if (envCount > 0) badges += '<span class="card-badge">' + envCount + ' 个环境变量</span>';
+      html += '<div class="mcp-server-card">' +
+        '<div class="card-header">' +
+        '<span class="card-name">' + escHtml(srv.name) + '</span>' +
+        '<span class="card-cmd">' + escHtml(srv.command) + '</span>' +
+        badges +
+        '<div class="card-actions">' +
+        '<button onclick="showMCPServerForm(' + i + ')" title="编辑">✏️</button>' +
+        '<button class="btn-delete" onclick="deleteMCPServer(' + i + ')" title="删除">🗑️</button>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+    list.innerHTML = html;
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // 打开 MCP 服务器编辑弹层（index=-1 为新增）
+  window.showMCPServerForm = function(index) {
+    var modal = document.getElementById('mcp-server-modal');
+    document.getElementById('mcp-edit-index').value = index;
+    if (index === -1) {
+      document.getElementById('mcp-form-title').textContent = '添加 MCP 服务器';
+      document.getElementById('mcp-name').value = '';
+      document.getElementById('mcp-command').value = '';
+      document.getElementById('mcp-args').value = '';
+      document.getElementById('mcp-env-list').innerHTML = '';
+    } else {
+      var srv = mcpState.servers[index];
+      document.getElementById('mcp-form-title').textContent = '编辑 MCP 服务器';
+      document.getElementById('mcp-name').value = srv.name || '';
+      document.getElementById('mcp-command').value = srv.command || '';
+      document.getElementById('mcp-args').value = (srv.args || []).join('\n');
+      document.getElementById('mcp-env-list').innerHTML = '';
+      if (srv.env) {
+        var keys = Object.keys(srv.env);
+        for (var i = 0; i < keys.length; i++) {
+          addEnvRow(keys[i], srv.env[keys[i]]);
+        }
+      }
+    }
+    modal.style.display = 'flex';
+  };
+
+  // 关闭 MCP 服务器编辑弹层
+  window.closeMCPServerForm = function() {
+    document.getElementById('mcp-server-modal').style.display = 'none';
+  };
+
+  // 添加环境变量行
+  window.addEnvRow = function(key, val) {
+    var list = document.getElementById('mcp-env-list');
+    var row = document.createElement('div');
+    row.className = 'env-kv-row';
+    row.innerHTML =
+      '<input type="text" placeholder="KEY" value="' + escHtml(key || '') + '" style="flex:1;">' +
+      '<span class="kv-sep">=</span>' +
+      '<input type="text" placeholder="value" value="' + escHtml(val || '') + '" style="flex:2;">' +
+      '<button class="btn-del-env" onclick="this.parentElement.remove()">✕</button>';
+    list.appendChild(row);
+  };
+
+  // 保存表单中的 MCP 服务器（新增或更新）
+  window.saveMCPServer = function() {
+    var name = document.getElementById('mcp-name').value.trim();
+    var command = document.getElementById('mcp-command').value.trim();
+    if (!name) { toast('服务器名称不能为空', 'error'); return; }
+    if (!command) { toast('命令不能为空', 'error'); return; }
+
+    // 解析参数（每行一个，去空行）
+    var argsRaw = document.getElementById('mcp-args').value;
+    var args = argsRaw.split('\n').map(function(s) { return s.trim(); }).filter(function(s) { return s !== ''; });
+
+    // 解析环境变量
+    var env = {};
+    var rows = document.getElementById('mcp-env-list').querySelectorAll('.env-kv-row');
+    for (var i = 0; i < rows.length; i++) {
+      var inputs = rows[i].querySelectorAll('input');
+      var k = inputs[0].value.trim();
+      var v = inputs[1].value;
+      if (k) env[k] = v;
+    }
+
+    var srv = { name: name, command: command };
+    if (args.length > 0) srv.args = args;
+    if (Object.keys(env).length > 0) srv.env = env;
+
+    var idx = parseInt(document.getElementById('mcp-edit-index').value, 10);
+    if (idx === -1) {
+      mcpState.servers.push(srv);
+    } else {
+      mcpState.servers[idx] = srv;
+    }
+
+    closeMCPServerForm();
+    renderMCPServers();
+  };
+
+  // 删除 MCP 服务器
+  window.deleteMCPServer = function(index) {
+    mcpState.servers.splice(index, 1);
+    renderMCPServers();
+  };
+
+  // 发送 MCP 配置到服务端
+  function sendMCPConfig() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    sendWS({ type: 'set_mcp_config', mcp_config: { servers: mcpState.servers } });
   }
 
   // ========== TOAST ==========

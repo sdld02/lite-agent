@@ -111,7 +111,10 @@ func (h *ConnectionHandler) createRunner(sess *session.Session) *SessionRunner {
 
 	// 注册工具
 	for _, toolFactory := range h.server.toolFactories {
-		ag.AddTool(toolFactory())
+		tool := toolFactory()
+		if tool != nil {
+			ag.AddTool(tool)
+		}
 	}
 
 	// 恢复 memory
@@ -227,6 +230,10 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 		h.handleStopTelegramBot()
 	case MsgTypeAnswerQuestion:
 		h.handleAnswerQuestion(msg.SessionID, msg.Answers)
+	case MsgTypeGetMCPConfig:
+		h.handleGetMCPConfig()
+	case MsgTypeSetMCPConfig:
+		h.handleSetMCPConfig(msg.MCPConfig)
 	default:
 		h.sendError("", "未知消息类型: "+msg.Type)
 	}
@@ -771,6 +778,33 @@ func (h *ConnectionHandler) handleGetTelegramConfig() {
 	h.sendMessage(ServerMessage{
 		Type:           MsgTypeTelegramConfig,
 		TelegramConfig: &cfg,
+	})
+}
+
+// handleGetMCPConfig 处理获取 MCP 服务器配置请求
+func (h *ConnectionHandler) handleGetMCPConfig() {
+	cfg := h.server.GetMCPConfig()
+	h.sendMessage(ServerMessage{
+		Type:      MsgTypeMCPConfig,
+		MCPConfig: &cfg,
+	})
+}
+
+// handleSetMCPConfig 处理保存 MCP 服务器配置请求
+func (h *ConnectionHandler) handleSetMCPConfig(input *MCPConfigInfo) {
+	if input == nil {
+		h.sendError("", "MCP 配置不能为空")
+		return
+	}
+
+	cfg, err := h.server.SetMCPConfig(*input)
+	if err != nil {
+		h.sendError("", "保存 MCP 配置失败: "+err.Error())
+		return
+	}
+	h.sendMessage(ServerMessage{
+		Type:      MsgTypeMCPConfig,
+		MCPConfig: &cfg,
 	})
 }
 

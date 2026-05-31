@@ -15,12 +15,13 @@ import (
 
 // ClientMessage 客户端发来的消息
 type ClientMessage struct {
-	Type           string            `json:"type"`                 // 消息类型
-	Content        string            `json:"content,omitempty"`    // chat 类型的用户输入
-	SessionID      string            `json:"session_id,omitempty"` // 目标会话 ID
-	LLMConfig      *LLMConfigInfo    `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
+	Type           string              `json:"type"`                    // 消息类型
+	Content        string              `json:"content,omitempty"`       // chat 类型的用户输入
+	SessionID      string              `json:"session_id,omitempty"`    // 目标会话 ID
+	LLMConfig      *LLMConfigInfo      `json:"llm_config,omitempty"`    // set_llm_config 时的 LLM 配置
 	TelegramConfig *TelegramConfigInfo `json:"telegram_config,omitempty"` // set_telegram_config 时的 Telegram 配置
-	Answers        map[string]string `json:"answers,omitempty"`    // answer_question 时的用户答案
+	Answers        map[string]string   `json:"answers,omitempty"`       // answer_question 时的用户答案
+	MCPConfig      *MCPConfigInfo      `json:"mcp_config,omitempty"`    // set_mcp_config 时的 MCP 配置
 }
 
 // 支持的客户端消息类型常量
@@ -44,6 +45,10 @@ const (
 
 	// === 用户提问交互 ===
 	MsgTypeAnswerQuestion = "answer_question" // 用户回答了提问
+
+	// === MCP 服务器配置管理 ===
+	MsgTypeGetMCPConfig = "get_mcp_config" // 获取 MCP 服务器配置列表
+	MsgTypeSetMCPConfig = "set_mcp_config" // 保存 MCP 服务器配置列表
 )
 
 // ========== 服务端 → 客户端 ==========
@@ -65,9 +70,10 @@ type ServerMessage struct {
 	Status           *StatusInfo       `json:"status,omitempty"`            // 服务状态
 	Messages         []json.RawMessage `json:"messages,omitempty"`          // 历史消息列表（session_loaded 时）
 	Tasks            []TaskInfo        `json:"tasks,omitempty"`             // 任务列表（tasks 消息）
-	LLMConfig        *LLMConfigInfo    `json:"llm_config,omitempty"`        // LLM 配置（llm_config 消息）
-	TelegramConfig   *TelegramConfigInfo `json:"telegram_config,omitempty"` // Telegram Bot 配置（telegram_config 消息）
-	Questions        []tools.Question  `json:"questions,omitempty"`         // 用户问题列表（ask_question 时）
+	LLMConfig        *LLMConfigInfo      `json:"llm_config,omitempty"`        // LLM 配置（llm_config 消息）
+	TelegramConfig   *TelegramConfigInfo `json:"telegram_config,omitempty"`   // Telegram Bot 配置（telegram_config 消息）
+	Questions        []tools.Question    `json:"questions,omitempty"`         // 用户问题列表（ask_question 时）
+	MCPConfig        *MCPConfigInfo      `json:"mcp_config,omitempty"`        // MCP 服务器配置（mcp_config 消息）
 }
 
 // 支持的服务端消息类型常量
@@ -88,6 +94,7 @@ const (
 	MsgTypeLLMConfig        = "llm_config"          // LLM 配置信息
 	MsgTypeTelegramConfig   = "telegram_config"     // Telegram Bot 配置信息
 	MsgTypeAskQuestion      = "ask_question"        // 向用户提问（需要用户交互回答）
+	MsgTypeMCPConfig        = "mcp_config"          // MCP 服务器配置信息
 )
 
 // ToolCallMsg 工具调用消息
@@ -141,6 +148,19 @@ type TelegramConfigInfo struct {
 	Status   string `json:"status"`   // 运行状态: "stopped", "running", "error"
 	Username string `json:"username"` // Bot 用户名（运行时才有）
 	Error    string `json:"error"`    // 错误信息
+}
+
+// MCPServerConfigInfo MCP 服务器配置信息（单个服务器）
+type MCPServerConfigInfo struct {
+	Name    string            `json:"name"`           // 服务器名称
+	Command string            `json:"command"`        // 启动命令
+	Args    []string          `json:"args,omitempty"` // 命令参数
+	Env     map[string]string `json:"env,omitempty"`  // 环境变量
+}
+
+// MCPConfigInfo MCP 服务器配置列表（发送给客户端 / 接收客户端更新）
+type MCPConfigInfo struct {
+	Servers []MCPServerConfigInfo `json:"servers"` // 服务器列表
 }
 
 // ========== 辅助函数 ==========

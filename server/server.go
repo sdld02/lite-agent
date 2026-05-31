@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"lite-agent/agent"
 	"lite-agent/bot"
 	"lite-agent/llm"
+	"lite-agent/mcp"
 	"lite-agent/session"
 	agentpkg "lite-agent/tools/agent"
 	taskpkg "lite-agent/tools/task"
@@ -63,6 +65,9 @@ type Server struct {
 	tgBotError   string
 	tgBotUsername string
 
+	// 用户主目录（用于写入用户级 MCP 配置）
+	homeDir string
+
 	// HTTP 服务器
 	httpServer *http.Server
 }
@@ -78,6 +83,13 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 		cfg = openaiP.GetConfig()
 	}
 
+	// 获取用户主目录
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+		log.Printf("⚠️ 无法获取用户主目录: %v", err)
+	}
+
 	return &Server{
 		addr:          addr,
 		store:         store,
@@ -90,6 +102,7 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 		toolFactories: toolFactories,
 		taskMgr:       taskMgr,
 		startTime:     time.Now(),
+		homeDir:       homeDir,
 		conns:         make(map[*ConnectionHandler]struct{}),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
@@ -412,4 +425,64 @@ func (s *Server) StopTelegramBot() {
 	s.tgBotError = ""
 	s.tgBotUsername = ""
 	log.Println("🛑 Telegram Bot 已停止")
+}
+
+// ============================================================================
+// MCP 服务器配置管理
+// ============================================================================
+
+// GetMCPConfig 返回当前 MCP 服务器配置列表
+func (s *Server) GetMCPConfig() MCPConfigInfo {
+	mgr := mcp.GetGlobalManager()
+	if mgr == nil {
+		return MCPConfigInfo{Servers: []MCPServerConfigInfo{}}
+	}
+
+	configs := mgr.GetConfigs()
+	servers := make([]MCPServerConfigInfo, 0, len(configs))
+	for _, cfg := range configs {
+		servers = append(servers, MCPServerConfigInfo{
+			Name:    cfg.Name,
+			Command: cfg.Command,
+			Args:    cfg.Args,
+			Env:     cfg.Env,
+		})
+	}
+	return MCPConfigInfo{Servers: servers}
+}
+
+// SetMCPConfig 保存 MCP 服务器配置并热重载管理器
+func (s *Server) SetMCPConfig(input MCPConfigInfo) (MCPConfigInfo, error) {
+	// 转换为内部类型
+	configs := make([]mcp.ServerConfig, 0, len(input.Servers))
+	for _, srv := range input.Servers {
+		if srv.Name == "" || srv.Command == "" {
+			continue // 跳过无效配置
+		}
+		configs = append(configs, mcp.ServerConfig{
+			Name:    srv.Name,
+			Command: srv.Command,
+			Args:    srv.Args,
+			Env:     srv.Env,
+		})
+	}
+
+	// 持久化到 ~/.lite-agent/mcp.json
+	if s.homeDir != "" {
+		if err := mcp.SaveUserConfig(s.homeDir, configs); err != nil {
+			return MCPConfigInfo{}, fmt.Errorf("保存 MCP 配置失败: %w", err)
+		}
+	}
+
+	// 热重载全局管理器
+	mgr := mcp.GetGlobalManager()
+	if mgr == nil {
+		// 没有管理器时初始化一个
+		mcp.InitGlobalManager(configs)
+	} else {
+		mgr.Reload(configs)
+	}
+
+	log.Printf("⚙️  MCP 配置已更新: %d 个服务器", len(configs))
+	return s.GetMCPConfig(), nil
 }
