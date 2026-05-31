@@ -11,11 +11,19 @@ import (
 
 	"lite-agent/agent"
 	"lite-agent/session"
+	"lite-agent/tools"
 	agentpkg "lite-agent/tools/agent"
 	"lite-agent/tools/task"
 
 	"github.com/gorilla/websocket"
 )
+
+// pendingQuestion 等待用户回答的提问
+type pendingQuestion struct {
+	questions []tools.Question
+	answerCh  chan map[string]string
+	cancelCh  chan struct{} // 用于取消等待（连接断开时）
+}
 
 // SessionRunner 封装单个 session 的独立运行状态
 // 每个 session 拥有独立的 Agent 实例、context 和运行标志
@@ -27,6 +35,10 @@ type SessionRunner struct {
 	cancel context.CancelFunc
 
 	running atomic.Bool // 是否正在执行 handleChat
+
+	// 等待用户回答的提问（同一时间只会有一个）
+	pendingQMu sync.Mutex
+	pendingQ   *pendingQuestion
 }
 
 // outMsg 表示一条待发送的 WebSocket 消息
@@ -213,6 +225,8 @@ func (h *ConnectionHandler) handleMessage(msg ClientMessage) {
 		h.handleStartTelegramBot()
 	case MsgTypeStopTelegramBot:
 		h.handleStopTelegramBot()
+	case MsgTypeAnswerQuestion:
+		h.handleAnswerQuestion(msg.SessionID, msg.Answers)
 	default:
 		h.sendError("", "未知消息类型: "+msg.Type)
 	}
@@ -258,6 +272,46 @@ func (h *ConnectionHandler) runChat(runner *SessionRunner, content string) {
 
 	runner.mu.Lock()
 	ctx := task.ContextWithSessionID(runner.ctx, sessionID)
+
+	// 注入 QuestionHandler，使 ask_user_question 工具能够阻塞等待用户回答
+	ctx = tools.SetQuestionHandler(ctx, func(questions []tools.Question) (map[string]string, error) {
+		answerCh := make(chan map[string]string, 1)
+		cancelCh := make(chan struct{}, 1)
+
+		pq := &pendingQuestion{
+			questions: questions,
+			answerCh:  answerCh,
+			cancelCh:  cancelCh,
+		}
+
+		// 存储在 runner 上，供 handleAnswerQuestion 使用
+		runner.pendingQMu.Lock()
+		runner.pendingQ = pq
+		runner.pendingQMu.Unlock()
+
+		// 确保在函数返回时清理 pendingQ
+		defer func() {
+			runner.pendingQMu.Lock()
+			runner.pendingQ = nil
+			runner.pendingQMu.Unlock()
+		}()
+
+		// 发送提问消息到前端
+		h.sendSessionMessage(sessionID, ServerMessage{
+			Type:      MsgTypeAskQuestion,
+			Questions: questions,
+		})
+
+		// 阻塞等待用户回答或取消
+		select {
+		case answers := <-answerCh:
+			return answers, nil
+		case <-cancelCh:
+			return nil, fmt.Errorf("提问已被取消")
+		case <-ctx.Done():
+			return nil, fmt.Errorf("会话已关闭")
+		}
+	})
 	runner.mu.Unlock()
 
 	response, err := runner.ag.RunStream(ctx, content, func(event agent.StreamEvent) {
@@ -477,6 +531,15 @@ func (h *ConnectionHandler) handleCancel(sessionID string) {
 	// 取消当前 context，Agent.RunStream 会通过 ctx 感知取消
 	runner.mu.Lock()
 	runner.cancel()
+
+	// 取消等待中的提问（如果有的话）
+	runner.pendingQMu.Lock()
+	if runner.pendingQ != nil {
+		close(runner.pendingQ.cancelCh)
+		runner.pendingQ = nil
+	}
+	runner.pendingQMu.Unlock()
+
 	// 重建 runner 的 context（以便后续继续使用该 session）
 	newCtx, newCancel := context.WithCancel(h.ctx)
 	runner.ctx = newCtx
@@ -709,6 +772,41 @@ func (h *ConnectionHandler) handleGetTelegramConfig() {
 		Type:           MsgTypeTelegramConfig,
 		TelegramConfig: &cfg,
 	})
+}
+
+// handleAnswerQuestion 处理用户回答提问
+func (h *ConnectionHandler) handleAnswerQuestion(sessionID string, answers map[string]string) {
+	if sessionID == "" {
+		sessionID = h.activeSessionID
+	}
+
+	if answers == nil || len(answers) == 0 {
+		h.sendError(sessionID, "答案不能为空")
+		return
+	}
+
+	runner := h.getRunner(sessionID)
+	if runner == nil {
+		h.sendError(sessionID, "会话不存在: "+sessionID)
+		return
+	}
+
+	runner.pendingQMu.Lock()
+	pq := runner.pendingQ
+	runner.pendingQMu.Unlock()
+
+	if pq == nil {
+		h.sendError(sessionID, "当前没有等待回答的提问")
+		return
+	}
+
+	// 将答案发送到等待通道（非阻塞发送，防止重复回答导致阻塞）
+	select {
+	case pq.answerCh <- answers:
+		// 答案已发送
+	default:
+		h.sendError(sessionID, "已收到过该提问的答案")
+	}
 }
 
 // handleSetTelegramConfig 处理设置 Telegram Bot Token

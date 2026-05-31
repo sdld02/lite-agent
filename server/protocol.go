@@ -1,6 +1,10 @@
 package server
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"lite-agent/tools"
+)
 
 // ============================================================================
 // WebSocket 消息协议定义
@@ -11,11 +15,12 @@ import "encoding/json"
 
 // ClientMessage 客户端发来的消息
 type ClientMessage struct {
-	Type            string            `json:"type"`                 // 消息类型
-	Content         string            `json:"content,omitempty"`    // chat 类型的用户输入
-	SessionID       string            `json:"session_id,omitempty"` // 目标会话 ID
-	LLMConfig       *LLMConfigInfo    `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
-	TelegramConfig  *TelegramConfigInfo `json:"telegram_config,omitempty"` // set_telegram_config 时的 Telegram 配置
+	Type           string            `json:"type"`                 // 消息类型
+	Content        string            `json:"content,omitempty"`    // chat 类型的用户输入
+	SessionID      string            `json:"session_id,omitempty"` // 目标会话 ID
+	LLMConfig      *LLMConfigInfo    `json:"llm_config,omitempty"` // set_llm_config 时的 LLM 配置
+	TelegramConfig *TelegramConfigInfo `json:"telegram_config,omitempty"` // set_telegram_config 时的 Telegram 配置
+	Answers        map[string]string `json:"answers,omitempty"`    // answer_question 时的用户答案
 }
 
 // 支持的客户端消息类型常量
@@ -36,6 +41,9 @@ const (
 	MsgTypeSetTelegramConfig  = "set_telegram_config"  // 设置 Telegram Bot Token
 	MsgTypeStartTelegramBot   = "start_telegram_bot"   // 启动 Telegram Bot
 	MsgTypeStopTelegramBot    = "stop_telegram_bot"    // 停止 Telegram Bot
+
+	// === 用户提问交互 ===
+	MsgTypeAnswerQuestion = "answer_question" // 用户回答了提问
 )
 
 // ========== 服务端 → 客户端 ==========
@@ -59,6 +67,7 @@ type ServerMessage struct {
 	Tasks            []TaskInfo        `json:"tasks,omitempty"`             // 任务列表（tasks 消息）
 	LLMConfig        *LLMConfigInfo    `json:"llm_config,omitempty"`        // LLM 配置（llm_config 消息）
 	TelegramConfig   *TelegramConfigInfo `json:"telegram_config,omitempty"` // Telegram Bot 配置（telegram_config 消息）
+	Questions        []tools.Question  `json:"questions,omitempty"`         // 用户问题列表（ask_question 时）
 }
 
 // 支持的服务端消息类型常量
@@ -78,6 +87,7 @@ const (
 	MsgTypeStatus           = "status"              // 服务状态
 	MsgTypeLLMConfig        = "llm_config"          // LLM 配置信息
 	MsgTypeTelegramConfig   = "telegram_config"     // Telegram Bot 配置信息
+	MsgTypeAskQuestion      = "ask_question"        // 向用户提问（需要用户交互回答）
 )
 
 // ToolCallMsg 工具调用消息
