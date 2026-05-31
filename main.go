@@ -106,6 +106,11 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 - task_list: 列出所有任务
 - task_get: 获取任务详情
 - skill: 调用技能（斜杠命令），如 commit、review-pr、explain-code、plan 等
+- ask_user_question: 在任务执行过程中向用户提问（多选题），用于收集偏好、澄清歧义、获取决策
+- grep: 强大的代码搜索工具（纯Go实现，零外部依赖），支持正则表达式、glob过滤、三种输出模式、分页。始终优先使用此工具进行文件内容搜索，而不是通过 shell 调用 grep/rg
+- glob: 快速文件名模式匹配工具，支持 ** 递归匹配（如 "**/*_test.go"），返回按修改时间排序的文件列表，适用于按文件名模式查找文件
+- web_fetch: 抓取指定 URL 内容并用 AI 分析，适用于阅读文档、文章等网页内容
+- web_search: 通过 DuckDuckGo 搜索互联网获取最新信息，返回搜索结果的标题、URL 和摘要
 
 %s
 
@@ -114,7 +119,8 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 2. 如果用户的问题不需要使用工具，请直接回答
 3. 执行 shell 命令时，注意当前操作系统是 %s，使用适合该系统的命令
 4. 当用户引用"斜杠命令"或"/<something>"时（如 /commit、/review-pr），应调用 skill 工具
-5. 请用中文回复用户`,
+5. 当需要在执行过程中了解用户偏好、澄清歧义或让用户做选择时，使用 ask_user_question 工具发起多选题
+6. 请用中文回复用户`,
 		sysInfo["os"],
 		sysInfo["arch"],
 		sysInfo["cpus"],
@@ -259,6 +265,11 @@ func main() {
 	registry.Register("task_update", func() agent.Tool { return tools.NewTaskUpdateTool() })
 	registry.Register("task_list", func() agent.Tool { return tools.NewTaskListTool() })
 	registry.Register("task_get", func() agent.Tool { return tools.NewTaskGetTool() })
+	registry.Register("ask_user_question", func() agent.Tool { return tools.NewAskUserQuestionTool() })
+	registry.Register("grep", func() agent.Tool { return tools.NewGrepTool() })
+	registry.Register("glob", func() agent.Tool { return tools.NewGlobTool() })
+	registry.Register("web_fetch", func() agent.Tool { return tools.NewWebFetchTool(providerCfg) })
+	registry.Register("web_search", func() agent.Tool { return tools.NewWebSearchTool() })
 
 	// 获取项目根目录（用于加载项目级技能）
 	projectRoot, _ := os.Getwd()
@@ -296,6 +307,16 @@ func main() {
 	ag.AddTool(tools.NewAgentTool(registry, providerCfg))
 	// Skill 技能工具
 	ag.AddTool(skillTool)
+	// AskUserQuestion 用户提问工具
+	ag.AddTool(tools.NewAskUserQuestionTool())
+	// Grep 代码搜索工具
+	ag.AddTool(tools.NewGrepTool())
+	// Glob 文件名匹配工具
+	ag.AddTool(tools.NewGlobTool())
+	// WebFetch 网页抓取工具
+	ag.AddTool(tools.NewWebFetchTool(providerCfg))
+	// WebSearch 网页搜索工具
+	ag.AddTool(tools.NewWebSearchTool())
 
 	// 初始化会话存储
 	store, err := session.NewStore(filepath.Join(homeDir, ".lite-agent", "sessions"))
@@ -326,6 +347,16 @@ func main() {
 				workDir, _ := os.Getwd()
 				return tools.NewSkillTool(homeDir, workDir, registry, providerCfg)
 			},
+			// AskUserQuestion 用户提问工具
+			func() agent.Tool { return tools.NewAskUserQuestionTool() },
+			// Grep 代码搜索工具
+			func() agent.Tool { return tools.NewGrepTool() },
+			// Glob 文件名匹配工具
+			func() agent.Tool { return tools.NewGlobTool() },
+			// WebFetch 网页抓取工具
+			func() agent.Tool { return tools.NewWebFetchTool(providerCfg) },
+			// WebSearch 网页搜索工具
+			func() agent.Tool { return tools.NewWebSearchTool() },
 			// Agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
 		}
 
@@ -370,6 +401,11 @@ func main() {
 		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
 		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
+		fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
+		fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
+		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
+		fmt.Println("  - web_fetch         : 网页抓取与分析")
+		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
 		fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 		fmt.Println("=================================")
 		fmt.Println()
@@ -434,6 +470,11 @@ func main() {
 		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
 		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
+		fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
+		fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
+		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
+		fmt.Println("  - web_fetch         : 网页抓取与分析")
+		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -522,6 +563,11 @@ func main() {
 	fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
 	fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
 	fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
+	fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
+	fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
+	fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
+	fmt.Println("  - web_fetch         : 网页抓取与分析")
+	fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
 	fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
@@ -537,6 +583,61 @@ func main() {
 	// 交互式对话
 	reader := bufio.NewReader(os.Stdin)
 	ctx := context.Background()
+
+	// CLI 模式的 QuestionHandler：从 stdin 读取答案
+	ctx = tools.SetQuestionHandler(ctx, func(questions []tools.Question) (map[string]string, error) {
+		fmt.Println("\n📋 Claude 正在向您提问：")
+		fmt.Println(strings.Repeat("─", 60))
+		for i, q := range questions {
+			fmt.Printf("\n%d. [%s] %s\n", i+1, q.Header, q.Question)
+			for j, opt := range q.Options {
+				fmt.Printf("   %c) %s — %s\n", 'A'+j, opt.Label, opt.Description)
+			}
+			if q.MultiSelect {
+				fmt.Println("   (可多选，用逗号分隔)")
+			}
+		}
+		fmt.Println(strings.Repeat("─", 60))
+
+		answers := make(map[string]string)
+		for _, q := range questions {
+			if q.MultiSelect {
+				fmt.Printf(">>> %s (多选，输入字母如 A,C): ", q.Header)
+			} else {
+				fmt.Printf(">>> %s (单选，输入字母): ", q.Header)
+			}
+
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(answer)
+
+			if answer == "" {
+				answers[q.Question] = "(未回答)"
+				continue
+			}
+
+			// 解析用户选择的字母
+			selectedLetters := strings.FieldsFunc(answer, func(r rune) bool {
+				return r == ',' || r == ' ' || r == '，'
+			})
+			var selectedLabels []string
+			for _, letter := range selectedLetters {
+				letter = strings.TrimSpace(strings.ToUpper(letter))
+				if len(letter) == 1 && letter[0] >= 'A' {
+					idx := int(letter[0] - 'A')
+					if idx >= 0 && idx < len(q.Options) {
+						selectedLabels = append(selectedLabels, q.Options[idx].Label)
+					}
+				}
+			}
+			if len(selectedLabels) > 0 {
+				answers[q.Question] = strings.Join(selectedLabels, ", ")
+			} else {
+				answers[q.Question] = answer
+			}
+		}
+		fmt.Println()
+		return answers, nil
+	})
 
 	for {
 		fmt.Print("👤 You: ")
