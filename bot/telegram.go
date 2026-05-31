@@ -462,10 +462,24 @@ func (b *Bot) createRunner(chatID int64, sess *session.Session) *chatRunner {
 	ag.AddTool(tools.NewTaskUpdateTool())
 	ag.AddTool(tools.NewTaskListTool())
 	ag.AddTool(tools.NewTaskGetTool())
+	// AskUserQuestion 用户提问工具
+	ag.AddTool(tools.NewAskUserQuestionTool())
+	// Grep 代码搜索工具
+	ag.AddTool(tools.NewGrepTool())
+	// Glob 文件名匹配工具
+	ag.AddTool(tools.NewGlobTool())
+	// WebFetch 网页抓取工具
+	ag.AddTool(tools.NewWebFetchTool(b.cfg.ProviderCfg))
+	// WebSearch 网页搜索工具
+	ag.AddTool(tools.NewWebSearchTool())
 	// 子 Agent 工具（使用传入的 registry）
 	if b.registry != nil {
 		ag.AddTool(tools.NewAgentTool(b.registry, b.cfg.ProviderCfg))
 	}
+	// Skill 技能工具
+	homeDir, _ := os.UserHomeDir()
+	workDir, _ := os.Getwd()
+	ag.AddTool(tools.NewSkillTool(homeDir, workDir, b.registry, b.cfg.ProviderCfg))
 	// MCP 工具
 	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
 		ag.AddTool(tools.NewMCPTool(mgr))
