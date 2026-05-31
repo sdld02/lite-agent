@@ -329,6 +329,118 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .telegram-actions .tg-stop { background:transparent; color:var(--error); border-color:var(--error); }
 .telegram-actions .tg-stop:hover { background:rgba(248,113,113,0.1); }
 .telegram-actions .tg-start:disabled, .telegram-actions .tg-stop:disabled { opacity:0.4; cursor:not-allowed; }
+
+/* ====== Ask User Question 提问卡片样式 ====== */
+.question-overlay {
+  position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:200;
+  display:flex; align-items:center; justify-content:center; animation:fadeIn 0.2s ease;
+  backdrop-filter:blur(4px);
+}
+.question-modal {
+  background:var(--surface); border:1px solid var(--border); border-radius:16px;
+  padding:28px 32px; width:560px; max-width:92vw; max-height:85vh;
+  overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+}
+.question-modal h2 {
+  font-size:20px; font-weight:700; margin-bottom:6px; display:flex; align-items:center; gap:10px;
+}
+.question-modal h2 .q-icon { font-size:24px; }
+.question-modal .q-subtitle {
+  font-size:12px; color:var(--text-muted); margin-bottom:8px;
+}
+.question-modal .q-progress {
+  display:flex; gap:6px; margin-bottom:20px; flex-wrap:wrap;
+}
+.question-modal .q-progress-dot {
+  width:10px; height:10px; border-radius:50%; background:var(--border);
+  transition:all 0.3s; cursor:pointer;
+}
+.question-modal .q-progress-dot.active { background:var(--accent); transform:scale(1.3); }
+.question-modal .q-progress-dot.answered { background:var(--success); }
+
+.q-block { margin-bottom:24px; animation:slideIn 0.25s ease; }
+.q-block .q-header {
+  display:inline-block; padding:3px 10px; border-radius:12px; background:var(--accent-dim);
+  color:var(--accent); font-size:11px; font-weight:600; text-transform:uppercase;
+  letter-spacing:0.5px; margin-bottom:8px;
+}
+.q-block .q-text { font-size:15px; font-weight:500; margin-bottom:14px; line-height:1.5; color:var(--text); }
+.q-block .q-type-hint {
+  font-size:11px; color:var(--text-muted); margin-bottom:8px;
+}
+
+.option-card {
+  display:flex; align-items:flex-start; gap:12px;
+  padding:12px 14px; margin-bottom:8px; border-radius:var(--radius);
+  border:1.5px solid var(--border); cursor:pointer; transition:all 0.2s;
+  background:var(--bg);
+}
+.option-card:hover { border-color:var(--accent); background:rgba(108,140,255,0.06); }
+.option-card.selected {
+  border-color:var(--accent); background:rgba(108,140,255,0.12);
+  box-shadow:0 0 0 1px var(--accent);
+}
+.option-card .opt-radio {
+  width:20px; height:20px; border-radius:50%; border:2px solid var(--border);
+  flex-shrink:0; margin-top:1px; transition:all 0.2s; display:flex;
+  align-items:center; justify-content:center;
+}
+.option-card.selected .opt-radio {
+  border-color:var(--accent); background:var(--accent);
+}
+.option-card.selected .opt-radio::after {
+  content:''; width:6px; height:6px; border-radius:50%; background:#fff;
+}
+.option-card .opt-check {
+  width:20px; height:20px; border-radius:4px; border:2px solid var(--border);
+  flex-shrink:0; margin-top:1px; transition:all 0.2s; display:flex;
+  align-items:center; justify-content:center; font-size:12px; color:#fff;
+}
+.option-card.selected .opt-check {
+  border-color:var(--accent); background:var(--accent);
+}
+.option-card .opt-body { flex:1; min-width:0; }
+.option-card .opt-label { font-weight:600; font-size:14px; color:var(--text); }
+.option-card .opt-desc { font-size:12px; color:var(--text-secondary); margin-top:2px; line-height:1.4; }
+
+.option-card.other-option {
+  border-style:dashed; background:transparent;
+}
+.option-card.other-option:hover { border-color:var(--warning); background:rgba(251,191,36,0.04); }
+.option-card.other-option.selected {
+  border-color:var(--warning); background:rgba(251,191,36,0.08);
+  box-shadow:0 0 0 1px var(--warning);
+}
+
+.custom-input-wrap {
+  margin-top:6px; display:none; width:100%;
+}
+.custom-input-wrap.visible { display:block; }
+.custom-input-wrap input {
+  width:100%; padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--bg); color:var(--text); font-size:14px; outline:none; transition:border-color 0.2s;
+}
+.custom-input-wrap input:focus { border-color:var(--warning); }
+
+.q-navigation {
+  display:flex; gap:10px; justify-content:space-between; margin-top:20px; padding-top:16px;
+  border-top:1px solid var(--border);
+}
+.q-navigation button {
+  padding:10px 24px; border-radius:var(--radius-sm); font-size:14px; font-weight:600;
+  cursor:pointer; transition:all 0.2s; border:none;
+}
+.q-navigation .btn-back {
+  background:var(--surface-hover); color:var(--text-secondary);
+}
+.q-navigation .btn-back:hover { background:var(--border); }
+.q-navigation .btn-next, .q-navigation .btn-submit {
+  background:var(--accent); color:#fff; margin-left:auto;
+}
+.q-navigation .btn-next:hover, .q-navigation .btn-submit:hover { filter:brightness(1.15); }
+.q-navigation .btn-next:disabled, .q-navigation .btn-submit:disabled {
+  opacity:0.35; cursor:not-allowed;
+}
 </style>
 </head>
 <body>
@@ -982,6 +1094,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       case 'tool_result':
         if (targetSession) updateToolResult(targetSession.id, msg.result);
         break;
+      case 'ask_question':
+        if (targetSession && msg.questions) {
+          showQuestionModal(targetSession.id, msg.questions);
+        }
+        break;
       case 'done':
         if (targetSession) finishStream(targetSession.id, msg.response, null);
         break;
@@ -1509,6 +1626,265 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     sendBtn.disabled = streaming;
   }
 
+  // ========== QUESTION MODAL (ask_user_question) ==========
+  var questionState = null; // { sessionId, questions, currentIdx, answers, customText }
+
+  function showQuestionModal(sessionId, questions) {
+    // 初始化状态
+    questionState = {
+      sessionId: sessionId,
+      questions: questions,
+      currentIdx: 0,
+      answers: {},
+      customText: {} // question text -> custom text
+    };
+
+    var overlay = document.getElementById('question-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'question-overlay';
+      overlay.className = 'question-overlay';
+      document.body.appendChild(overlay);
+    }
+    renderQuestion(overlay);
+  }
+
+  function closeQuestionModal() {
+    var overlay = document.getElementById('question-overlay');
+    if (overlay) overlay.remove();
+    questionState = null;
+  }
+
+  function renderQuestion(overlay) {
+    var qs = questionState;
+    var q = qs.questions[qs.currentIdx];
+    var isLast = qs.currentIdx >= qs.questions.length - 1;
+
+    // 构建进度点
+    var progressHtml = '';
+    for (var i = 0; i < qs.questions.length; i++) {
+      var dotCls = 'q-progress-dot';
+      if (i === qs.currentIdx) dotCls += ' active';
+      else if (qs.answers[qs.questions[i].question]) dotCls += ' answered';
+      if (qs.questions.length > 1) {
+        progressHtml += '<span class="' + dotCls + '" onclick="navigateToQuestion(' + i + ')" title="第' + (i+1) + '题"></span>';
+      }
+    }
+
+    // 构建选项列表
+    var optionsHtml = '';
+    var selectedValue = qs.answers[q.question] || '';
+    var selectedList = selectedValue ? selectedValue.split(', ') : [];
+    var isMulti = q.multi_select;
+    var isOtherSelected = selectedList.indexOf('__other__') >= 0;
+
+    for (var j = 0; j < q.options.length; j++) {
+      var opt = q.options[j];
+      var isSelected = selectedList.indexOf(opt.label) >= 0;
+      var cardCls = 'option-card';
+      if (isSelected) cardCls += ' selected';
+      var indicatorHtml;
+      if (isMulti) {
+        indicatorHtml = '<div class="opt-check">' + (isSelected ? '✓' : '') + '</div>';
+      } else {
+        indicatorHtml = '<div class="opt-radio"></div>';
+      }
+      optionsHtml +=
+        '<div class="' + cardCls + '" onclick="selectOption(' + j + ', this)">' +
+        indicatorHtml +
+        '<div class="opt-body">' +
+        '<div class="opt-label">' + escHtml(opt.label) + '</div>' +
+        '<div class="opt-desc">' + escHtml(opt.description) + '</div>' +
+        '</div></div>';
+    }
+
+    // "Other" 选项（自动追加）
+    var otherCardCls = 'option-card other-option';
+    if (isOtherSelected) otherCardCls += ' selected';
+    optionsHtml +=
+      '<div class="' + otherCardCls + '" onclick="selectOtherOption(this)">' +
+      (isMulti
+        ? '<div class="opt-check">' + (isOtherSelected ? '✓' : '') + '</div>'
+        : '<div class="opt-radio"></div>') +
+      '<div class="opt-body">' +
+      '<div class="opt-label">✏️ 自定义答案</div>' +
+      '<div class="opt-desc">输入你自己的答案</div>' +
+      '<div class="custom-input-wrap' + (isOtherSelected ? ' visible' : '') + '">' +
+      '<input type="text" placeholder="输入自定义答案..." value="' + escHtml(qs.customText[q.question] || '') + '" ' +
+      'oninput="updateCustomText(this.value)" onclick="event.stopPropagation()" onkeydown="if(event.key===\'Enter\'){event.preventDefault();goNextOrSubmit()}">' +
+      '</div>' +
+      '</div></div>';
+
+    var typeHint = isMulti ? '（可多选）' : '（单选）';
+
+    var navHtml = '';
+    if (qs.questions.length > 1) {
+      navHtml += '<button class="btn-back" onclick="navigateQuestion(-1)"' + (qs.currentIdx === 0 ? ' style="visibility:hidden"' : '') + '>← 上一题</button>';
+    }
+    if (isLast) {
+      navHtml += '<button class="btn-submit" onclick="submitQuestionAnswers()" id="q-submit-btn">提交答案 ✓</button>';
+    } else {
+      navHtml += '<button class="btn-next" onclick="goNextOrSubmit()">下一题 →</button>';
+    }
+
+    overlay.innerHTML =
+      '<div class="question-modal">' +
+      '<h2><span class="q-icon">📋</span> 需要你的选择</h2>' +
+      '<div class="q-subtitle">Agent 正在等待你的回答...</div>' +
+      (qs.questions.length > 1 ? '<div class="q-progress">' + progressHtml + '</div>' : '') +
+      '<div class="q-block">' +
+      '<span class="q-header">' + escHtml(q.header) + '</span>' +
+      '<div class="q-text">' + escHtml(q.question) + '</div>' +
+      '<div class="q-type-hint">' + typeHint + '</div>' +
+      optionsHtml +
+      '</div>' +
+      '<div class="q-navigation">' + navHtml + '</div>' +
+      '</div>';
+
+    // 聚焦自定义答案输入（如果已选中 Other）
+    if (isOtherSelected) {
+      setTimeout(function() {
+        var input = overlay.querySelector('.custom-input-wrap.visible input');
+        if (input) input.focus();
+      }, 100);
+    }
+  }
+
+  window.selectOption = function(idx, cardEl) {
+    var qs = questionState;
+    if (!qs) return;
+    var q = qs.questions[qs.currentIdx];
+    var opt = q.options[idx];
+
+    if (q.multi_select) {
+      // 多选模式：toggle
+      var selected = qs.answers[q.question] || '';
+      var selectedList = selected ? selected.split(', ') : [];
+      var pos = selectedList.indexOf(opt.label);
+      if (pos >= 0) {
+        selectedList.splice(pos, 1);
+      } else {
+        // 如果之前选了 Other，取消 Other
+        var otherPos = selectedList.indexOf('__other__');
+        if (otherPos >= 0) selectedList.splice(otherPos, 1);
+        selectedList.push(opt.label);
+      }
+      qs.answers[q.question] = selectedList.join(', ');
+    } else {
+      // 单选模式
+      qs.answers[q.question] = opt.label;
+    }
+
+    // 清除 Other 的自定义文本（单选模式，且不是 Other）
+    delete qs.customText[q.question];
+
+    renderQuestion(document.getElementById('question-overlay'));
+  };
+
+  window.selectOtherOption = function(cardEl) {
+    var qs = questionState;
+    if (!qs) return;
+    var q = qs.questions[qs.currentIdx];
+
+    if (q.multi_select) {
+      var selected = qs.answers[q.question] || '';
+      var selectedList = selected ? selected.split(', ') : [];
+      var pos = selectedList.indexOf('__other__');
+      if (pos >= 0) {
+        selectedList.splice(pos, 1);
+        delete qs.customText[q.question];
+      } else {
+        selectedList.push('__other__');
+      }
+      qs.answers[q.question] = selectedList.join(', ');
+    } else {
+      if (qs.answers[q.question] === '__other__') {
+        delete qs.answers[q.question];
+      } else {
+        qs.answers[q.question] = '__other__';
+      }
+    }
+
+    renderQuestion(document.getElementById('question-overlay'));
+  };
+
+  window.updateCustomText = function(text) {
+    var qs = questionState;
+    if (!qs) return;
+    var q = qs.questions[qs.currentIdx];
+    qs.customText[q.question] = text;
+  };
+
+  window.navigateToQuestion = function(idx) {
+    if (!questionState) return;
+    questionState.currentIdx = idx;
+    renderQuestion(document.getElementById('question-overlay'));
+  };
+
+  window.navigateQuestion = function(delta) {
+    if (!questionState) return;
+    var newIdx = questionState.currentIdx + delta;
+    if (newIdx >= 0 && newIdx < questionState.questions.length) {
+      questionState.currentIdx = newIdx;
+      renderQuestion(document.getElementById('question-overlay'));
+    }
+  };
+
+  window.goNextOrSubmit = function() {
+    if (!questionState) return;
+    if (questionState.currentIdx < questionState.questions.length - 1) {
+      navigateQuestion(1);
+    } else {
+      submitQuestionAnswers();
+    }
+  };
+
+  window.submitQuestionAnswers = function() {
+    var qs = questionState;
+    if (!qs) return;
+
+    // 构建最终答案
+    var finalAnswers = {};
+    for (var i = 0; i < qs.questions.length; i++) {
+      var q = qs.questions[i];
+      var answer = qs.answers[q.question] || '';
+
+      // 将 __other__ 替换为自定义文本
+      if (q.multi_select) {
+        var parts = answer ? answer.split(', ') : [];
+        var finalParts = [];
+        for (var p = 0; p < parts.length; p++) {
+          if (parts[p] === '__other__') {
+            var customText = qs.customText[q.question] || '';
+            if (customText) finalParts.push(customText);
+          } else {
+            finalParts.push(parts[p]);
+          }
+        }
+        finalAnswers[q.question] = finalParts.join(', ');
+      } else {
+        if (answer === '__other__') {
+          finalAnswers[q.question] = qs.customText[q.question] || '(自定义答案)';
+        } else {
+          finalAnswers[q.question] = answer;
+        }
+      }
+
+      // 如果没有任何答案，标记为未回答
+      if (!finalAnswers[q.question]) {
+        finalAnswers[q.question] = '(未回答)';
+      }
+    }
+
+    // 发送答案到服务端
+    var s = getSessionById(qs.sessionId);
+    var serverSid = (s && s.serverSessionId) ? s.serverSessionId : '';
+    sendWS({ type: 'answer_question', session_id: serverSid, answers: finalAnswers });
+
+    // 关闭模态框
+    closeQuestionModal();
+  }
+
   // ========== USER INPUT ==========
 
   // 发送指定 session 的待发送消息队列
@@ -1836,14 +2212,6 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     header.addEventListener('dblclick', showConfig);
   });
 
-})();
-</script>
-</body>
-</html>
-})();
-</script>
-</body>
-</html>
 })();
 </script>
 </body>
