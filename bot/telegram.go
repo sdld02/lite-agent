@@ -466,6 +466,10 @@ func (b *Bot) createRunner(chatID int64, sess *session.Session) *chatRunner {
 	if b.registry != nil {
 		ag.AddTool(tools.NewAgentTool(b.registry, b.cfg.ProviderCfg))
 	}
+	// MCP 工具
+	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+		ag.AddTool(tools.NewMCPTool(mgr))
+	}
 
 	// 恢复 memory
 	if len(sess.Messages) > 0 {

@@ -111,6 +111,7 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 - glob: 快速文件名模式匹配工具，支持 ** 递归匹配（如 "**/*_test.go"），返回按修改时间排序的文件列表，适用于按文件名模式查找文件
 - web_fetch: 抓取指定 URL 内容并用 AI 分析，适用于阅读文档、文章等网页内容
 - web_search: 通过 DuckDuckGo 搜索互联网获取最新信息，返回搜索结果的标题、URL 和摘要
+- mcp: 调用 MCP (Model Context Protocol) 服务器提供的工具。使用方式：先用 operation="list_tools" 查看服务器提供的工具，再用 operation="call_tool" 调用具体工具
 
 %s
 
@@ -274,13 +275,23 @@ func main() {
 	// 获取项目根目录（用于加载项目级技能）
 	projectRoot, _ := os.Getwd()
 
+	// 初始化 MCP 管理器（按需加载，不启动服务器）
+	tools.InitMCPManager(homeDir, projectRoot)
+	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+		registry.Register("mcp", func() agent.Tool { return tools.NewMCPTool(mgr) })
+	}
+
 	// 创建 Skill 工具（需要在 registry 之后，因为 fork 模式需要 registry）
 	skillTool := tools.NewSkillTool(homeDir, projectRoot, registry, providerCfg)
 	registry.Register("skill", func() agent.Tool { return skillTool })
 
 	// 设置系统提示词 - 始终使用动态构建的提示词，并允许自定义提示词作为补充
 	skillsPrompt := skill.FormatSkillsPrompt(skillTool.GetSkills(), 3000)
+	mcpPrompt := tools.FormatMCPServersPrompt(tools.GetMCPManager())
 	finalPrompt := buildDefaultSystemPrompt(skillsPrompt)
+	if mcpPrompt != "" {
+		finalPrompt += mcpPrompt
+	}
 	if *systemPrompt != "" {
 		// 如果提供了自定义提示词，则将其附加到默认提示词后面
 		finalPrompt = *systemPrompt + "\n\n" + finalPrompt
@@ -317,6 +328,10 @@ func main() {
 	ag.AddTool(tools.NewWebFetchTool(providerCfg))
 	// WebSearch 网页搜索工具
 	ag.AddTool(tools.NewWebSearchTool())
+	// MCP 工具
+	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+		ag.AddTool(tools.NewMCPTool(mgr))
+	}
 
 	// 初始化会话存储
 	store, err := session.NewStore(filepath.Join(homeDir, ".lite-agent", "sessions"))
@@ -357,6 +372,13 @@ func main() {
 			func() agent.Tool { return tools.NewWebFetchTool(providerCfg) },
 			// WebSearch 网页搜索工具
 			func() agent.Tool { return tools.NewWebSearchTool() },
+			// MCP 工具（共享全局管理器）
+			func() agent.Tool {
+				if mgr := tools.GetMCPManager(); mgr != nil {
+					return tools.NewMCPTool(mgr)
+				}
+				return nil
+			},
 			// Agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
 		}
 
@@ -369,6 +391,10 @@ func main() {
 		go func() {
 			<-sigChan
 			fmt.Println("\n🛑 收到退出信号，正在关闭服务...")
+			// 清理 MCP 连接
+			if mgr := tools.GetMCPManager(); mgr != nil {
+				mgr.Shutdown()
+			}
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -406,6 +432,9 @@ func main() {
 		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
 		fmt.Println("  - web_fetch         : 网页抓取与分析")
 		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
+		if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+			fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
+		}
 		fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 		fmt.Println("=================================")
 		fmt.Println()
@@ -475,6 +504,9 @@ func main() {
 		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
 		fmt.Println("  - web_fetch         : 网页抓取与分析")
 		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
+		if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+			fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
+		}
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -534,6 +566,9 @@ func main() {
 		<-sigChan
 		fmt.Println("\n👋 收到退出信号，正在保存会话...")
 		saveSession()
+		if mgr := tools.GetMCPManager(); mgr != nil {
+			mgr.Shutdown()
+		}
 		os.Exit(0)
 	}()
 
@@ -568,6 +603,9 @@ func main() {
 	fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
 	fmt.Println("  - web_fetch         : 网页抓取与分析")
 	fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
+	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
+		fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
+	}
 	fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
@@ -652,6 +690,9 @@ func main() {
 		switch {
 		case input == "quit" || input == "exit":
 			saveSession()
+			if mgr := tools.GetMCPManager(); mgr != nil {
+				mgr.Shutdown()
+			}
 			fmt.Println("👋 再见!")
 			return
 
