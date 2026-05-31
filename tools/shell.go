@@ -3,13 +3,14 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"runtime"
 	"strings"
+	"time"
 
 	"lite-agent/agent"
 )
+
+// defaultShellTimeoutMs 默认命令执行超时（2 分钟）
+const defaultShellTimeoutMs = 2 * 60 * 1000
 
 // ShellTool Shell 命令执行工具
 type ShellTool struct {
@@ -130,7 +131,6 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (*
 
 	// 安全检查：验证命令是否在白名单中
 	if t.allowedCommands != nil {
-		// 提取命令名（第一个单词）
 		parts := strings.Fields(command)
 		if len(parts) == 0 {
 			return &agent.ToolResult{
@@ -152,35 +152,56 @@ func (t *ShellTool) Execute(ctx context.Context, args map[string]interface{}) (*
 		}
 	}
 
-	// 执行命令
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		psCommand := fmt.Sprintf("chcp 65001 > $null; %s", command)
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCommand)
-		cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8")
-	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	// 超时回调：超时后台化而非直接 kill，LLM 可拿到部分输出继续推理
+	onTimeout := func(backgroundFn func()) bool {
+		backgroundFn()
+		return true // true = 后台化
 	}
 
-	// 获取输出
-	output, err := cmd.CombinedOutput()
+	sc, err := spawnShellCommand(ctx, command, defaultShellTimeoutMs, onTimeout)
 	if err != nil {
 		return &agent.ToolResult{
-			Content: fmt.Sprintf("命令执行失败: %v\n输出: %s", err, string(output)),
+			Content: agent.FormatToolError(fmt.Errorf("启动命令失败: %w", err)),
+			IsError: true,
 		}, nil
 	}
 
-	if len(output) == 0 {
-		return &agent.ToolResult{Content: "命令执行成功（无输出）"}, nil
+	// 等待结果，二次保护超时 = 命令超时 + 10s
+	waitTimeout := time.Duration(defaultShellTimeoutMs)*time.Millisecond + 10*time.Second
+	result := sc.Result(waitTimeout)
+
+	return formatShellResult(result), nil
+}
+
+// formatShellResult 将 ShellResult 转换为 ToolResult
+func formatShellResult(r ShellResult) *agent.ToolResult {
+	output := r.Stdout
+	if output == "" {
+		output = "命令执行成功（无输出）"
 	}
 
-	// 限制输出长度
-	result := string(output)
-	if len(result) > 10000 {
-		result = result[:10000] + "\n... (输出被截断)"
+	if r.Backgrounded {
+		return &agent.ToolResult{
+			Content: fmt.Sprintf(
+				"命令已转入后台运行（超时 %ds），已获取的输出：\n%s",
+				defaultShellTimeoutMs/1000, output,
+			),
+		}
 	}
 
-	return &agent.ToolResult{Content: result}, nil
+	if r.Interrupted {
+		return &agent.ToolResult{
+			Content: fmt.Sprintf("命令被终止（可能超时或被取消），已获取的输出：\n%s", output),
+		}
+	}
+
+	if r.ExitCode != 0 {
+		return &agent.ToolResult{
+			Content: fmt.Sprintf("命令退出码 %d，输出：\n%s", r.ExitCode, output),
+		}
+	}
+
+	return &agent.ToolResult{Content: output}
 }
 
 // AddAllowedCommand 添加允许的命令到白名单
