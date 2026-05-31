@@ -107,7 +107,7 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 - task_get: 获取任务详情
 - skill: 调用技能（斜杠命令），如 commit、review-pr、explain-code、plan 等
 - ask_user_question: 在任务执行过程中向用户提问（多选题），用于收集偏好、澄清歧义、获取决策
-- grep: 强大的代码搜索工具（纯Go实现，零外部依赖），支持正则表达式、glob过滤、三种输出模式、分页。始终优先使用此工具进行文件内容搜索，而不是通过 shell 调用 grep/rg
+- grep: 强大的代码搜索工具（纯Go实现，零外部依赖，跨平台可用）。ALWAYS 使用 grep 工具进行文件内容搜索，NEVER 通过 shell 调用 grep/rg 等外部命令。支持正则表达式、glob过滤、三种输出模式、分页。
 - glob: 快速文件名模式匹配工具，支持 ** 递归匹配（如 "**/*_test.go"），返回按修改时间排序的文件列表，适用于按文件名模式查找文件
 - web_fetch: 抓取指定 URL 内容并用 AI 分析，适用于阅读文档、文章等网页内容
 - web_search: 通过 DuckDuckGo 搜索互联网获取最新信息，返回搜索结果的标题、URL 和摘要

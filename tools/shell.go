@@ -92,7 +92,7 @@ func (t *ShellTool) Name() string {
 }
 
 func (t *ShellTool) Description() string {
-	return "执行 shell 命令并返回输出结果。可以执行系统命令如 ls, dir, pwd, git 等。"
+	return "执行 shell 命令并返回输出结果。可以执行系统命令如 ls, dir, pwd, git 等。注意：NEVER 使用 shell 执行 grep/rg/find 进行文件内容搜索，请使用专用的 grep 工具。"
 }
 
 func (t *ShellTool) Parameters() map[string]interface{} {

@@ -68,7 +68,7 @@ func (t *GrepTool) Description() string {
 - 支持 head_limit 和 offset 实现结果分页（默认 250 条）
 - 使用 multiline: true 进行跨行匹配
 
-注意：始终优先使用此工具进行文件内容搜索，而不是通过 shell 调用 grep/rg。`
+重要：ALWAYS 使用此 grep 工具进行文件内容搜索，NEVER 通过 shell 调用 grep/rg 命令。`
 }
 
 func (t *GrepTool) Parameters() map[string]interface{} {
