@@ -431,7 +431,7 @@ func (s *Server) StopTelegramBot() {
 // MCP 服务器配置管理
 // ============================================================================
 
-// GetMCPConfig 返回当前 MCP 服务器配置列表
+// GetMCPConfig 返回当前 MCP 服务器配置列表（含已缓存的工具列表）
 func (s *Server) GetMCPConfig() MCPConfigInfo {
 	mgr := mcp.GetGlobalManager()
 	if mgr == nil {
@@ -441,12 +441,26 @@ func (s *Server) GetMCPConfig() MCPConfigInfo {
 	configs := mgr.GetConfigs()
 	servers := make([]MCPServerConfigInfo, 0, len(configs))
 	for _, cfg := range configs {
-		servers = append(servers, MCPServerConfigInfo{
-			Name:    cfg.Name,
-			Command: cfg.Command,
-			Args:    cfg.Args,
-			Env:     cfg.Env,
-		})
+		info := MCPServerConfigInfo{
+			Name:     cfg.Name,
+			Command:  cfg.Command,
+			Args:     cfg.Args,
+			Env:      cfg.Env,
+			Disabled: cfg.Disabled,
+		}
+		// 已连接的服务器，补充缓存的工具列表
+		if !cfg.Disabled {
+			if tools, ok := mgr.GetCachedTools(cfg.Name); ok {
+				info.Tools = make([]MCPToolInfo, 0, len(tools))
+				for _, t := range tools {
+					info.Tools = append(info.Tools, MCPToolInfo{
+						Name:        t.Name,
+						Description: t.Description,
+					})
+				}
+			}
+		}
+		servers = append(servers, info)
 	}
 	return MCPConfigInfo{Servers: servers}
 }
@@ -460,10 +474,11 @@ func (s *Server) SetMCPConfig(input MCPConfigInfo) (MCPConfigInfo, error) {
 			continue // 跳过无效配置
 		}
 		configs = append(configs, mcp.ServerConfig{
-			Name:    srv.Name,
-			Command: srv.Command,
-			Args:    srv.Args,
-			Env:     srv.Env,
+			Name:     srv.Name,
+			Command:  srv.Command,
+			Args:     srv.Args,
+			Env:      srv.Env,
+			Disabled: srv.Disabled,
 		})
 	}
 

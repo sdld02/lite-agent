@@ -208,7 +208,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 @keyframes fadeIn { from{opacity:0} to{opacity:1} }
 .modal {
   background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-  padding:24px; width:420px; max-width:90vw;
+  padding:24px; width:520px; max-width:92vw;
 }
 .modal h3 { margin-bottom:16px; font-size:16px; }
 .modal label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; margin-top:12px; }
@@ -361,6 +361,42 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .mcp-add-btn:hover { border-color:var(--accent); color:var(--accent); }
 .mcp-hint { font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.4; }
 
+/* MCP 禁用状态 */
+.mcp-server-card.disabled { opacity:0.55; border-color:var(--surface-hover); }
+.mcp-server-card.disabled .card-name { color:var(--text-muted); text-decoration:line-through; }
+
+/* MCP 开关 */
+.mcp-toggle { display:flex; align-items:center; gap:8px; cursor:pointer; flex-shrink:0; }
+.mcp-toggle input { display:none; }
+.mcp-toggle .slider {
+  width:32px; height:18px; border-radius:9px; background:var(--text-muted); position:relative; transition:background 0.2s;
+}
+.mcp-toggle .slider::after {
+  content:''; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%;
+  background:#fff; transition:transform 0.2s;
+}
+.mcp-toggle input:checked + .slider { background:var(--accent); }
+.mcp-toggle input:checked + .slider::after { transform:translateX(14px); }
+.mcp-toggle .toggle-label { font-size:11px; color:var(--text-muted); }
+
+/* MCP 工具列表 */
+.mcp-tool-list {
+  padding:0 12px 10px 12px; border-top:1px solid var(--border); display:none;
+}
+.mcp-tool-list.open { display:block; }
+.mcp-tool-toggle {
+  font-size:11px; color:var(--accent); cursor:pointer; padding:4px 0;
+  display:flex; align-items:center; gap:4px; user-select:none;
+}
+.mcp-tool-toggle:hover { text-decoration:underline; }
+.mcp-tool-item {
+  padding:5px 8px; border-radius:var(--radius-sm); background:var(--surface);
+  margin-bottom:4px; font-size:11px; color:var(--text-secondary);
+}
+.mcp-tool-item .tool-name { font-weight:600; color:var(--text); }
+.mcp-tool-item .tool-desc { color:var(--text-muted); margin-top:1px; }
+.mcp-tool-empty { font-size:11px; color:var(--text-muted); padding:4px 0; }
+
 /* MCP 服务器编辑弹层 */
 .mcp-modal-overlay {
   position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:200;
@@ -368,7 +404,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 }
 .mcp-modal {
   background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
-  padding:24px; width:480px; max-width:94vw; max-height:88vh; overflow-y:auto;
+  padding:24px; width:520px; max-width:94vw; max-height:88vh; overflow-y:auto;
 }
 .mcp-modal h3 { margin-bottom:16px; font-size:16px; }
 .mcp-modal label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:4px; margin-top:12px; }
@@ -2280,21 +2316,53 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var html = '';
     for (var i = 0; i < mcpState.servers.length; i++) {
       var srv = mcpState.servers[i];
+      var disabled = !!srv.disabled;
       var argCount = (srv.args && srv.args.length) ? srv.args.length : 0;
       var envCount = srv.env ? Object.keys(srv.env).length : 0;
       var badges = '';
       if (argCount > 0) badges += '<span class="card-badge">' + argCount + ' 个参数</span>';
       if (envCount > 0) badges += '<span class="card-badge">' + envCount + ' 个环境变量</span>';
-      html += '<div class="mcp-server-card">' +
+
+      // 工具列表 HTML
+      var toolsHtml = '';
+      var hasTools = srv.tools && srv.tools.length > 0;
+      if (hasTools) {
+        var tHtml = '';
+        for (var t = 0; t < srv.tools.length; t++) {
+          var tool = srv.tools[t];
+          tHtml += '<div class="mcp-tool-item">' +
+            '<div class="tool-name">' + escHtml(tool.name) + '</div>' +
+            (tool.description ? '<div class="tool-desc">' + escHtml(tool.description) + '</div>' : '') +
+            '</div>';
+        }
+        toolsHtml = '<div class="mcp-tool-list" id="mcp-tools-' + i + '">' +
+          '<div class="mcp-tool-toggle" onclick="toggleToolList(' + i + ')">' +
+          '<span id="mcp-tools-arrow-' + i + '">▶</span> 工具列表 (' + srv.tools.length + ')' +
+          '</div>' +
+          '<div id="mcp-tools-body-' + i + '" style="display:none;">' + tHtml + '</div>' +
+          '</div>';
+      } else if (!disabled) {
+        toolsHtml = '<div class="mcp-tool-list">' +
+          '<div class="mcp-tool-empty">暂无工具缓存（连接后自动获取）</div>' +
+          '</div>';
+      }
+
+      html += '<div class="mcp-server-card' + (disabled ? ' disabled' : '') + '">' +
         '<div class="card-header">' +
         '<span class="card-name">' + escHtml(srv.name) + '</span>' +
         '<span class="card-cmd">' + escHtml(srv.command) + '</span>' +
         badges +
+        '<label class="mcp-toggle" title="' + (disabled ? '已禁用' : '已启用') + '">' +
+        '<input type="checkbox" ' + (disabled ? '' : 'checked') + ' onchange="toggleMCPServer(' + i + ', this.checked)">' +
+        '<span class="slider"></span>' +
+        '<span class="toggle-label">' + (disabled ? '禁用' : '启用') + '</span>' +
+        '</label>' +
         '<div class="card-actions">' +
         '<button onclick="showMCPServerForm(' + i + ')" title="编辑">✏️</button>' +
         '<button class="btn-delete" onclick="deleteMCPServer(' + i + ')" title="删除">🗑️</button>' +
         '</div>' +
         '</div>' +
+        toolsHtml +
         '</div>';
     }
     list.innerHTML = html;
@@ -2303,6 +2371,24 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+
+  // 切换 MCP 服务器的启用/禁用状态
+  window.toggleMCPServer = function(index, enabled) {
+    mcpState.servers[index].disabled = !enabled;
+    renderMCPServers();
+  };
+
+  // 展开/折叠工具列表
+  window.toggleToolList = function(index) {
+    var body = document.getElementById('mcp-tools-body-' + index);
+    var arrow = document.getElementById('mcp-tools-arrow-' + index);
+    if (!body || !arrow) return;
+    var open = body.style.display === 'block';
+    body.style.display = open ? 'none' : 'block';
+    arrow.textContent = open ? '▶' : '▼';
+    var listEl = document.getElementById('mcp-tools-' + index);
+    if (listEl) listEl.classList.toggle('open', !open);
+  };
 
   // 打开 MCP 服务器编辑弹层（index=-1 为新增）
   window.showMCPServerForm = function(index) {
@@ -2378,6 +2464,9 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     if (idx === -1) {
       mcpState.servers.push(srv);
     } else {
+      // 编辑时保留 disabled 和 tools 状态
+      srv.disabled = mcpState.servers[idx].disabled;
+      srv.tools = mcpState.servers[idx].tools;
       mcpState.servers[idx] = srv;
     }
 

@@ -150,12 +150,20 @@ type TelegramConfigInfo struct {
 	Error    string `json:"error"`    // 错误信息
 }
 
+// MCPToolInfo MCP 工具摘要（前端展示用）
+type MCPToolInfo struct {
+	Name        string `json:"name"`        // 工具名称
+	Description string `json:"description"` // 工具描述
+}
+
 // MCPServerConfigInfo MCP 服务器配置信息（单个服务器）
 type MCPServerConfigInfo struct {
-	Name    string            `json:"name"`           // 服务器名称
-	Command string            `json:"command"`        // 启动命令
-	Args    []string          `json:"args,omitempty"` // 命令参数
-	Env     map[string]string `json:"env,omitempty"`  // 环境变量
+	Name     string            `json:"name"`             // 服务器名称
+	Command  string            `json:"command"`          // 启动命令
+	Args     []string          `json:"args,omitempty"`   // 命令参数
+	Env      map[string]string `json:"env,omitempty"`    // 环境变量
+	Disabled bool              `json:"disabled"`         // 是否禁用（默认 false=启用）
+	Tools    []MCPToolInfo     `json:"tools,omitempty"`  // 已缓存的工具列表（已连接时才有）
 }
 
 // MCPConfigInfo MCP 服务器配置列表（发送给客户端 / 接收客户端更新）
