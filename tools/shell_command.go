@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -96,10 +95,8 @@ func spawnShellCommand(ctx context.Context, command string, timeoutMs int, onTim
 	cmd.Stdout = sc.outBuf
 	cmd.Stderr = sc.outBuf
 
-	// 设置进程组，便于后续 tree-kill
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
+	// 设置进程组，便于后续 tree-kill（平台特定实现）
+	setSysProcAttr(cmd)
 
 	sc.cmd = cmd
 
@@ -166,21 +163,7 @@ func (sc *ShellCommand) doKill(gentle bool) {
 		return
 	}
 
-	if runtime.GOOS == "windows" {
-		_ = sc.cmd.Process.Kill()
-		return
-	}
-
-	pid := sc.cmd.Process.Pid
-	if gentle {
-		// 先 SIGTERM，给进程清理机会
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-		time.AfterFunc(3*time.Second, func() {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		})
-	} else {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-	}
+	killProcessGroup(sc.cmd.Process, gentle)
 }
 
 // Kill 外部主动终止命令
