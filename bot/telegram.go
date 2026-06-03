@@ -45,6 +45,17 @@ type Bot struct {
 	runnersMu sync.RWMutex
 }
 
+// pendingQuestion 等待用户回答的问题状态
+type pendingQuestion struct {
+	questions   []tools.Question
+	answers     map[string]string // 已收集的答案
+	currentIdx  int              // 当前问题索引
+	multiSelected []string       // 多选已选中的选项
+	waitingOther bool            // 是否等待"其他"文字输入
+	msgID       int              // 发送的问题消息 ID（用于更新）
+	done        chan struct{}     // 所有问题回答完毕后关闭
+}
+
 // chatRunner 单个聊天会话的运行状态
 type chatRunner struct {
 	sess    *session.Session
@@ -53,6 +64,9 @@ type chatRunner struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	running bool // 是否正在执行
+
+	// 等待用户回答问题的状态（nil 表示当前没有待回答的问题）
+	pending *pendingQuestion
 }
 
 // toolInfo 工具调用信息（用于流式显示）
@@ -111,6 +125,17 @@ func (b *Bot) start(withSignalHandler bool) error {
 
 	log.Println("🚀 Telegram Bot 已启动，等待消息...")
 
+	processUpdate := func(update tgbotapi.Update) {
+		if update.CallbackQuery != nil {
+			go b.handleCallbackQuery(update.CallbackQuery)
+			return
+		}
+		if update.Message == nil {
+			return
+		}
+		go b.handleMessage(update.Message)
+	}
+
 	if withSignalHandler {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -118,10 +143,7 @@ func (b *Bot) start(withSignalHandler bool) error {
 		for {
 			select {
 			case update := <-updates:
-				if update.Message == nil {
-					continue
-				}
-				go b.handleMessage(update.Message)
+				processUpdate(update)
 
 			case <-sigChan:
 				log.Println("🛑 收到退出信号，正在关闭 Telegram Bot...")
@@ -134,10 +156,7 @@ func (b *Bot) start(withSignalHandler bool) error {
 
 	// 无信号处理模式
 	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-		go b.handleMessage(update.Message)
+		processUpdate(update)
 	}
 
 	return nil
@@ -164,8 +183,360 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		return
 	}
 
+	// 检查是否有待回答的问题（等待文字输入的"其他"）
+	b.runnersMu.RLock()
+	runner, hasRunner := b.runners[chatID]
+	b.runnersMu.RUnlock()
+
+	if hasRunner {
+		runner.mu.Lock()
+		pq := runner.pending
+		runner.mu.Unlock()
+
+		if pq != nil && pq.waitingOther {
+			b.handleOtherInput(chatID, runner, text)
+			return
+		}
+	}
+
 	// 正常对话
 	b.handleChat(chatID, text)
+}
+
+
+// ============================================================================
+// ask_user_question Telegram 实现
+// ============================================================================
+
+// Callback data 前缀常量
+const (
+	cbPrefixSelect = "aq:sel:"  // 选择某个选项（单选/多选）
+	cbPrefixDone   = "aq:done" // 多选完成
+	cbPrefixOther  = "aq:other" // 选择"其他"
+)
+
+// makeTelegramQuestionHandler 创建一个 Telegram 专属的 QuestionHandler
+// 通过 InlineKeyboard 向用户展示选项，阻塞直到所有问题都被回答
+func (b *Bot) makeTelegramQuestionHandler(chatID int64, runner *chatRunner) tools.QuestionHandler {
+	return func(questions []tools.Question) (map[string]string, error) {
+		answers := make(map[string]string)
+		done := make(chan struct{})
+
+		pq := &pendingQuestion{
+			questions: questions,
+			answers:   answers,
+			done:      done,
+		}
+
+		// 注册到 runner
+		runner.mu.Lock()
+		runner.pending = pq
+		runner.mu.Unlock()
+
+		// 发送第一个问题
+		b.sendQuestion(chatID, pq)
+
+		// 阻塞等待所有问题回答完毕（或 runner ctx 被取消）
+		runner.mu.Lock()
+		ctx := runner.ctx
+		runner.mu.Unlock()
+
+		select {
+		case <-done:
+		case <-ctx.Done():
+			runner.mu.Lock()
+			runner.pending = nil
+			runner.mu.Unlock()
+			return nil, ctx.Err()
+		}
+
+		// 清除 pending 状态
+		runner.mu.Lock()
+		runner.pending = nil
+		runner.mu.Unlock()
+
+		return answers, nil
+	}
+}
+
+// sendQuestion 发送当前问题的 InlineKeyboard 消息
+func (b *Bot) sendQuestion(chatID int64, pq *pendingQuestion) {
+	if pq.currentIdx >= len(pq.questions) {
+		return
+	}
+	q := pq.questions[pq.currentIdx]
+
+	// 构建消息文本
+	var sb strings.Builder
+	total := len(pq.questions)
+	if total > 1 {
+		fmt.Fprintf(&sb, "❓ *问题 %d/%d* — %s\n\n", pq.currentIdx+1, total, escapeMarkdownV2(q.Header))
+	} else {
+		fmt.Fprintf(&sb, "❓ *%s*\n\n", escapeMarkdownV2(q.Header))
+	}
+	sb.WriteString(escapeMarkdownV2(q.Question))
+
+	if q.MultiSelect {
+		sb.WriteString("\n\n_\\(可多选，选完后点「✅ 完成」\\)_")
+		// 显示已选中的选项
+		if len(pq.multiSelected) > 0 {
+			sb.WriteString("\n已选: ")
+			for i, s := range pq.multiSelected {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(escapeMarkdownV2(s))
+			}
+		}
+	}
+
+	// 构建 InlineKeyboard
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for i, opt := range q.Options {
+		label := opt.Label
+		// 多选时，已选中的选项加勾
+		if q.MultiSelect {
+			for _, sel := range pq.multiSelected {
+				if sel == label {
+					label = "✓ " + label
+					break
+				}
+			}
+		}
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			label,
+			fmt.Sprintf("%s%d:%d", cbPrefixSelect, pq.currentIdx, i),
+		)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+
+	// "其他"按钮
+	otherBtn := tgbotapi.NewInlineKeyboardButtonData("✏️ 其他...", cbPrefixOther)
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(otherBtn))
+
+	// 多选时加"完成"按钮
+	if q.MultiSelect {
+		doneBtn := tgbotapi.NewInlineKeyboardButtonData("✅ 完成", cbPrefixDone)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(doneBtn))
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.ReplyMarkup = keyboard
+
+	sent, err := b.api.Send(msg)
+	if err != nil {
+		log.Printf("发送问题消息失败 (chat=%d): %v", chatID, err)
+		// 回退到纯文本
+		fallback := tgbotapi.NewMessage(chatID, fmt.Sprintf("❓ %s\n\n%s", q.Header, q.Question))
+		fallback.ReplyMarkup = keyboard
+		if sent2, err2 := b.api.Send(fallback); err2 == nil {
+			pq.msgID = sent2.MessageID
+		}
+		return
+	}
+	pq.msgID = sent.MessageID
+}
+
+// handleCallbackQuery 处理按钮点击回调
+func (b *Bot) handleCallbackQuery(cq *tgbotapi.CallbackQuery) {
+	chatID := cq.Message.Chat.ID
+	data := cq.Data
+
+	// 先应答回调（消除按钮加载动画）
+	callback := tgbotapi.NewCallback(cq.ID, "")
+	b.api.Request(callback) //nolint:errcheck
+
+	b.runnersMu.RLock()
+	runner, exists := b.runners[chatID]
+	b.runnersMu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	runner.mu.Lock()
+	pq := runner.pending
+	runner.mu.Unlock()
+
+	if pq == nil {
+		return
+	}
+
+	switch {
+	case data == cbPrefixOther:
+		// 等待用户文字输入
+		runner.mu.Lock()
+		pq.waitingOther = true
+		runner.mu.Unlock()
+		b.sendText(chatID, "✏️ 请输入你的自定义答案：")
+
+	case data == cbPrefixDone:
+		// 多选完成
+		q := pq.questions[pq.currentIdx]
+		answer := strings.Join(pq.multiSelected, ", ")
+		if answer == "" {
+			answer = "(未选择)"
+		}
+		pq.answers[q.Question] = answer
+		pq.multiSelected = nil
+		b.removeKeyboard(chatID, pq.msgID, fmt.Sprintf("✅ 已选：%s", answer))
+		b.advanceQuestion(chatID, pq)
+
+	case strings.HasPrefix(data, cbPrefixSelect):
+		// 解析 "aq:sel:<questionIdx>:<optionIdx>"
+		rest := strings.TrimPrefix(data, cbPrefixSelect)
+		var qIdx, oIdx int
+		fmt.Sscanf(rest, "%d:%d", &qIdx, &oIdx)
+
+		if qIdx != pq.currentIdx || oIdx >= len(pq.questions[qIdx].Options) {
+			return
+		}
+
+		q := pq.questions[qIdx]
+		chosen := q.Options[oIdx].Label
+
+		if q.MultiSelect {
+			// 切换选中状态
+			found := false
+			newSelected := pq.multiSelected[:0]
+			for _, s := range pq.multiSelected {
+				if s == chosen {
+					found = true
+					continue
+				}
+				newSelected = append(newSelected, s)
+			}
+			if !found {
+				newSelected = append(newSelected, chosen)
+			}
+			pq.multiSelected = newSelected
+			// 更新消息，刷新勾选状态
+			b.updateQuestion(chatID, pq)
+		} else {
+			// 单选：直接记录答案，前进到下一题
+			pq.answers[q.Question] = chosen
+			b.removeKeyboard(chatID, pq.msgID, fmt.Sprintf("✅ 已选：%s", chosen))
+			b.advanceQuestion(chatID, pq)
+		}
+	}
+}
+
+// handleOtherInput 处理"其他"文字输入
+func (b *Bot) handleOtherInput(chatID int64, runner *chatRunner, text string) {
+	runner.mu.Lock()
+	pq := runner.pending
+	runner.mu.Unlock()
+
+	if pq == nil {
+		return
+	}
+
+	q := pq.questions[pq.currentIdx]
+	runner.mu.Lock()
+	pq.waitingOther = false
+	runner.mu.Unlock()
+
+	if q.MultiSelect {
+		// 多选模式：追加到已选中
+		pq.multiSelected = append(pq.multiSelected, text)
+		b.sendText(chatID, fmt.Sprintf("✅ 已添加「%s」，继续选择或点「✅ 完成」", text))
+		b.updateQuestion(chatID, pq)
+	} else {
+		// 单选模式：直接记录
+		pq.answers[q.Question] = text
+		b.removeKeyboard(chatID, pq.msgID, fmt.Sprintf("✅ 已输入：%s", text))
+		b.advanceQuestion(chatID, pq)
+	}
+}
+
+// advanceQuestion 前进到下一个问题，或者完成所有问题
+func (b *Bot) advanceQuestion(chatID int64, pq *pendingQuestion) {
+	pq.currentIdx++
+	if pq.currentIdx >= len(pq.questions) {
+		// 所有问题已回答
+		close(pq.done)
+		return
+	}
+	// 发送下一个问题
+	b.sendQuestion(chatID, pq)
+}
+
+// updateQuestion 更新已发送的问题消息（刷新多选勾选状态）
+func (b *Bot) updateQuestion(chatID int64, pq *pendingQuestion) {
+	if pq.msgID == 0 {
+		return
+	}
+	q := pq.questions[pq.currentIdx]
+
+	var sb strings.Builder
+	total := len(pq.questions)
+	if total > 1 {
+		fmt.Fprintf(&sb, "❓ *问题 %d/%d* — %s\n\n", pq.currentIdx+1, total, escapeMarkdownV2(q.Header))
+	} else {
+		fmt.Fprintf(&sb, "❓ *%s*\n\n", escapeMarkdownV2(q.Header))
+	}
+	sb.WriteString(escapeMarkdownV2(q.Question))
+	sb.WriteString("\n\n_\\(可多选，选完后点「✅ 完成」\\)_")
+	if len(pq.multiSelected) > 0 {
+		sb.WriteString("\n已选: ")
+		for i, s := range pq.multiSelected {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(escapeMarkdownV2(s))
+		}
+	}
+
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for i, opt := range q.Options {
+		label := opt.Label
+		for _, sel := range pq.multiSelected {
+			if sel == label {
+				label = "✓ " + label
+				break
+			}
+		}
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			label,
+			fmt.Sprintf("%s%d:%d", cbPrefixSelect, pq.currentIdx, i),
+		)
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn))
+	}
+	otherBtn := tgbotapi.NewInlineKeyboardButtonData("✏️ 其他...", cbPrefixOther)
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(otherBtn))
+	doneBtn := tgbotapi.NewInlineKeyboardButtonData("✅ 完成", cbPrefixDone)
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(doneBtn))
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, pq.msgID, sb.String(), keyboard)
+	edit.ParseMode = tgbotapi.ModeMarkdownV2
+	if _, err := b.api.Send(edit); err != nil {
+		if !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("更新问题消息失败 (chat=%d): %v", chatID, err)
+		}
+	}
+}
+
+// removeKeyboard 移除消息的 InlineKeyboard 并更新文本
+func (b *Bot) removeKeyboard(chatID int64, msgID int, confirmText string) {
+	if msgID == 0 {
+		return
+	}
+	emptyKeyboard := tgbotapi.InlineKeyboardMarkup{
+		InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{},
+	}
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, emptyKeyboard)
+	if _, err := b.api.Send(edit); err != nil {
+		if !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("移除键盘失败 (chat=%d): %v", chatID, err)
+		}
+	}
+	if confirmText != "" {
+		b.sendText(chatID, confirmText)
+	}
 }
 
 // handleCommand 处理 Telegram 命令
@@ -225,9 +596,9 @@ func (b *Bot) handleChat(chatID int64, text string) {
 	}
 	runner.running = true
 
-	// 每次执行使用新的 context
+	// 每次执行使用新的 context，注入 QuestionHandler
 	runner.ctx, runner.cancel = context.WithCancel(context.Background())
-	ctx := runner.ctx
+	ctx := tools.SetQuestionHandler(runner.ctx, b.makeTelegramQuestionHandler(chatID, runner))
 	runner.mu.Unlock()
 
 	defer func() {
@@ -249,7 +620,7 @@ func (b *Bot) handleChat(chatID int64, text string) {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	var lastEditTime time.Time
-	const editInterval = 800 * time.Millisecond // 编辑间隔
+	editInterval := 800 * time.Millisecond // 编辑间隔（429 时动态延长）
 
 	// 工具调用后需要创建新的"思考中"消息
 	var needNewBubble bool
@@ -271,7 +642,7 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		needNewBubble = false
 	}
 
-	// editOrThrottle 限频编辑消息
+	// editOrThrottle 限频编辑消息，遇到 429 自动退避
 	editOrThrottle := func(final bool) {
 		now := time.Now()
 		if !final && now.Sub(lastEditTime) < editInterval {
@@ -279,7 +650,8 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		}
 		lastEditTime = now
 
-		rawText := buildDisplayText(contentBuilder.String(), reasoningBuilder.String(), pendingToolCalls)
+		// 流式过程用纯文本（MarkdownV2 在内容未收完时代码块/转义容易出错）
+		rawText := buildDisplayTextPlain(contentBuilder.String(), reasoningBuilder.String(), pendingToolCalls)
 		if rawText == "" {
 			return
 		}
@@ -291,12 +663,34 @@ func (b *Bot) handleChat(chatID int64, text string) {
 		}
 
 		edit := tgbotapi.NewEditMessageText(chatID, thinkingMsg.MessageID, text)
-		edit.ParseMode = tgbotapi.ModeMarkdownV2
+		// 不设置 ParseMode，使用纯文本，避免流式未完成时 MarkdownV2 解析失败
 		if _, err := b.api.Send(edit); err != nil {
-			// 编辑失败（可能内容未变或消息太旧），忽略
-			if !strings.Contains(err.Error(), "message is not modified") &&
-				!strings.Contains(err.Error(), "message to edit not found") {
+			errStr := err.Error()
+			switch {
+			case strings.Contains(errStr, "message is not modified"):
+				// 内容未变，忽略
+			case strings.Contains(errStr, "message to edit not found"):
+				// 消息已消失，忽略
+			case strings.Contains(errStr, "Too Many Requests"):
+				// 解析 retry_after，动态退避：下次至少等 retry_after 秒
+				retryAfter := parseTelegramRetryAfter(errStr)
+				backoff := time.Duration(retryAfter+1) * time.Second
+				if backoff > editInterval {
+					editInterval = backoff
+					log.Printf("触发 429，流式编辑退避至 %.0fs (chat=%d)", backoff.Seconds(), chatID)
+				}
+				// 把 lastEditTime 推迟，让 backoff 后才能再次编辑
+				lastEditTime = now.Add(backoff - editInterval)
+			default:
 				log.Printf("编辑消息失败 (chat=%d): %v", chatID, err)
+			}
+		} else {
+			// 成功后逐步恢复正常间隔
+			if editInterval > 800*time.Millisecond {
+				editInterval = editInterval * 3 / 4
+				if editInterval < 800*time.Millisecond {
+					editInterval = 800 * time.Millisecond
+				}
 			}
 		}
 	}
@@ -737,7 +1131,7 @@ func escapeMarkdownV2(s string) string {
 }
 
 // buildDisplayText 构建显示文本（整合内容和推理过程）
-// 用户内容自动进行 MarkdownV2 转义
+// 用于最终结果，使用 MarkdownV2 格式
 func buildDisplayText(content, reasoning string, tools []toolInfo) string {
 	var sb strings.Builder
 
@@ -766,6 +1160,55 @@ func buildDisplayText(content, reasoning string, tools []toolInfo) string {
 	}
 
 	return sb.String()
+}
+
+// buildDisplayTextPlain 构建纯文本显示（用于流式编辑，避免 MarkdownV2 未完成时解析失败）
+func buildDisplayTextPlain(content, reasoning string, tools []toolInfo) string {
+	var sb strings.Builder
+
+	if reasoning != "" {
+		sb.WriteString("💭 思考过程:\n")
+		sb.WriteString(reasoning)
+		sb.WriteString("\n\n")
+	}
+
+	if content != "" {
+		sb.WriteString(content)
+	}
+
+	if len(tools) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		for _, t := range tools {
+			sb.WriteString(fmt.Sprintf("⏳ 正在执行: %s\n", t.name))
+		}
+	}
+
+	return sb.String()
+}
+
+// parseTelegramRetryAfter 从 Telegram 429 错误信息中解析 retry_after 秒数
+// 错误格式示例: "Too Many Requests: retry after 99"
+func parseTelegramRetryAfter(errMsg string) int {
+	const prefix = "retry after "
+	idx := strings.Index(errMsg, prefix)
+	if idx < 0 {
+		return 30 // 默认退避 30s
+	}
+	numStr := strings.TrimSpace(errMsg[idx+len(prefix):])
+	end := 0
+	for end < len(numStr) && numStr[end] >= '0' && numStr[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 30
+	}
+	n := 0
+	for _, c := range numStr[:end] {
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // truncateByRunes 按 rune 安全截断字符串
