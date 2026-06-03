@@ -979,7 +979,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     if (s && s.serverSessionId && s.messages.length === 0 && s.messageCount > 0) {
       sendWS({ type: 'load_session', session_id: s.serverSessionId });
     }
-    renderTasks();
+    if (s && s.serverSessionId) {
+      requestTasks(s.serverSessionId);
+    } else {
+      renderTasks();
+    }
     updateSendButton();
   };
 
@@ -1401,6 +1405,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             infoTarget.name = msg.session.preview ? msg.session.preview.slice(0, 30) : '新任务';
             renderSessions();
             flushPendingMessages(infoTarget.id);
+            requestTasks(msg.session.id);
           }
         }
         break;
