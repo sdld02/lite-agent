@@ -210,12 +210,23 @@ func (p *OpenAIProvider) buildChatRequest(messages []agent.Message, tools []agen
 func convertToolCalls(toolCalls []openAIToolCall) []agent.ToolCall {
 	result := make([]agent.ToolCall, len(toolCalls))
 	for i, tc := range toolCalls {
+		args := tc.Function.Arguments
+		// 确保 Arguments 是合法 JSON，避免保存会话时序列化失败
+		// LLM 偶尔会返回非 JSON 内容（如流中断或裸字符串）
+		var raw json.RawMessage
+		if json.Valid([]byte(args)) {
+			raw = json.RawMessage(args)
+		} else {
+			// 降级：将其序列化为 JSON 字符串保存，不丢弃内容
+			encoded, _ := json.Marshal(args)
+			raw = json.RawMessage(encoded)
+		}
 		result[i] = agent.ToolCall{
 			ID:   tc.ID,
 			Type: tc.Type,
 			Function: agent.FunctionCall{
 				Name:      tc.Function.Name,
-				Arguments: json.RawMessage(tc.Function.Arguments),
+				Arguments: raw,
 			},
 		}
 	}
