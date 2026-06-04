@@ -286,7 +286,10 @@ type ToolResult struct {
 
 ### 自定义技能
 
-在项目根目录创建 `.claude/skills/` 目录，添加 Markdown 文件即可定义新技能。技能文件包含 YAML 前置元数据和技能提示词。
+在以下目录创建 Markdown 文件即可定义新技能（技能文件包含 YAML 前置元数据和技能提示词）：
+
+- 项目级：`<项目根>/.lite-agent/skills/<skill-name>/SKILL.md`
+- 用户级：`~/.lite-agent/skills/<skill-name>/SKILL.md`（全局共享）
 
 ## MCP 协议集成
 
