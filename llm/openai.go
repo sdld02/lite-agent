@@ -47,7 +47,10 @@ func NewOpenAIProvider(config OpenAIConfig) *OpenAIProvider {
 		baseURL: baseURL,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: 0, // 不限总时长，由 context 控制取消
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 30 * time.Second,
+			},
 		},
 	}
 }

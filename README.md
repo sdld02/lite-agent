@@ -349,7 +349,7 @@ MCP 服务器按需启动——只有首次调用时才启动子进程，减少�
 | 提供者 | Base URL | 默认模型 | 获取 API Key |
 |--------|----------|----------|-------------|
 | OpenAI | https://api.openai.com/v1 | gpt-4o | [OpenAI](https://platform.openai.com/) |
-| DeepSeek | https://api.deepseek.com/v1 | deepseek-v4-pro | [DeepSeek](https://platform.deepseek.com/) |
+| DeepSeek | https://api.deepseek.com/v1 | deepseek-flash | [DeepSeek](https://platform.deepseek.com/) |
 | Moonshot | https://api.moonshot.cn/v1 | moonshot-v1-8k | [Kimi](https://platform.moonshot.cn/) |
 | 智谱 AI | https://open.bigmodel.cn/api/paas/v4 | glm-4 | [智谱](https://open.bigmodel.cn/) |
 | 通义千问 | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-turbo | [阿里云](https://dashscope.console.aliyun.com/) |

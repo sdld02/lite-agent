@@ -23,7 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-//go:embed static/*
+//go:embed all:static
 var staticFiles embed.FS
 
 // ToolFactory 工具工厂函数类型

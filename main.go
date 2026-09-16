@@ -37,7 +37,7 @@ var llmProviders = map[string]struct {
 	model   string
 }{
 	"openai":   {"https://api.openai.com/v1", "gpt-4o"},
-	"deepseek": {"https://api.deepseek.com/v1", "deepseek-v4-pro"},
+	"deepseek": {"https://api.deepseek.com/v1", "deepseek-flash"},
 	"moonshot": {"https://api.moonshot.cn/v1", "moonshot-v1-8k"},
 	"zhipu":    {"https://open.bigmodel.cn/api/paas/v4", "glm-4"},
 	"qwen":     {"https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo"},

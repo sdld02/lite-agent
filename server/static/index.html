@@ -232,6 +232,32 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .msg .bubble ul, .msg .bubble ol { margin:2px 0; padding-left:18px; }
 .msg .bubble blockquote { border-left:2px solid var(--accent); padding-left:10px; color:var(--text-secondary); margin:6px 0; }
 
+/* ====== MARKDOWN RENDERED CONTENT ====== */
+.msg .bubble.md-block p { margin:6px 0; }
+.msg .bubble.md-block > :first-child { margin-top:0; }
+.msg .bubble.md-block > :last-child { margin-bottom:0; }
+.msg .bubble.md-block h1, .msg .bubble.md-block h2, .msg .bubble.md-block h3,
+.msg .bubble.md-block h4, .msg .bubble.md-block h5, .msg .bubble.md-block h6 {
+  margin:12px 0 6px; font-weight:600; line-height:1.35; color:var(--text);
+}
+.msg .bubble.md-block h1 { font-size:17px; }
+.msg .bubble.md-block h2 { font-size:15px; }
+.msg .bubble.md-block h3 { font-size:14px; }
+.msg .bubble.md-block h4, .msg .bubble.md-block h5, .msg .bubble.md-block h6 { font-size:13px; }
+.msg .bubble.md-block ul, .msg .bubble.md-block ol { margin:6px 0; padding-left:22px; }
+.msg .bubble.md-block li { margin:2px 0; }
+.msg .bubble.md-block li > ul, .msg .bubble.md-block li > ol { margin:2px 0; }
+.msg .bubble.md-block a { color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-dim); }
+.msg .bubble.md-block a:hover { border-bottom-color:var(--accent); }
+.msg .bubble.md-block hr { border:none; border-top:1px solid var(--border); margin:10px 0; }
+.msg .bubble.md-block table { border-collapse:collapse; margin:8px 0; font-size:12px; display:block; overflow-x:auto; max-width:100%; }
+.msg .bubble.md-block th, .msg .bubble.md-block td { border:1px solid var(--border); padding:5px 9px; text-align:left; }
+.msg .bubble.md-block th { background:rgba(255,255,255,0.04); font-weight:600; }
+.msg .bubble.md-block img { max-width:100%; border-radius:var(--radius-xs); }
+.msg .bubble.md-block pre { position:relative; }
+.msg .bubble.md-block pre code.hljs, .msg .bubble pre code.hljs { background:transparent; padding:0; font-size:12px; border-radius:0; }
+.msg .bubble.md-block :not(pre) > code { background:rgba(255,255,255,0.08); padding:1px 5px; border-radius:4px; color:#e6c07b; }
+
 /* ====== REASONING ====== */
 .reasoning-block {
   margin-bottom:6px; padding:8px 12px;
@@ -277,7 +303,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .tool-result .error { color:var(--error); font-size:11px; }
 
 /* ====== STREAMING ====== */
-.streaming-cursor::after { content:' ▌'; animation:blink 0.8s infinite; color:var(--accent); }
+.stream-cursor { display:inline-block; width:7px; height:13px; background:var(--accent); margin-left:2px; vertical-align:-2px; border-radius:1.5px; animation:blink 0.8s infinite; }
+.reasoning-content { white-space:pre-wrap; word-break:break-word; margin-top:2px; }
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 .spinner-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent); animation:pulse 1s infinite; }
 @keyframes pulse { 0%,100%{opacity:0.3;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
@@ -694,6 +721,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .q-navigation .btn-next:hover, .q-navigation .btn-submit:hover { filter:brightness(1.1); transform:translateY(-1px); }
 .q-navigation .btn-next:disabled, .q-navigation .btn-submit:disabled { opacity:0.3; cursor:not-allowed; transform:none; box-shadow:none; }
 </style>
+<link rel="stylesheet" href="vendor/highlight-github-dark.min.css">
 </head>
 <body>
 <div id="app">
@@ -775,7 +803,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     <select id="cfg-provider" onchange="onProviderChange()" style="width:100%;padding:10px 14px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;outline:none;margin-top:4px;">
       <option value="custom">自定义</option>
       <option value="openai">OpenAI (GPT-4o)</option>
-      <option value="deepseek">DeepSeek (V4 Pro)</option>
+      <option value="deepseek">DeepSeek (Flash)</option>
       <option value="moonshot">Moonshot (Kimi)</option>
       <option value="zhipu">智谱 (GLM-4)</option>
       <option value="qwen">通义千问</option>
@@ -861,9 +889,36 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   </div>
 </div>
 
+<script src="vendor/marked.min.js"></script>
+<script src="vendor/purify.min.js"></script>
+<script src="vendor/highlight.min.js"></script>
 <script>
 (function() {
   'use strict';
+
+  // ========== MARKDOWN ENGINE (marked + DOMPurify + highlight.js) ==========
+  if (typeof marked !== 'undefined') {
+    marked.setOptions({ gfm: true, breaks: true });
+  }
+  if (typeof hljs !== 'undefined') {
+    hljs.configure({ ignoreUnescapedHTML: true });
+  }
+
+  // ========== SCROLL PIN（仅当用户贴近底部时自动跟随）==========
+  var messagesPinned = true;
+  function isNearBottom() {
+    var el = document.getElementById('messages');
+    if (!el) return true;
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+  }
+  function scrollToBottom() {
+    var el = document.getElementById('messages');
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+  (function bindScrollPin() {
+    var el = document.getElementById('messages');
+    if (el) el.addEventListener('scroll', function() { messagesPinned = isNearBottom(); });
+  })();
 
   // ========== STATE ==========
   var defaultUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws';
@@ -903,7 +958,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
   var LLM_PROVIDERS = {
     openai:   { base_url: 'https://api.openai.com/v1',       model: 'gpt-4o' },
-    deepseek: { base_url: 'https://api.deepseek.com/v1',      model: 'deepseek-v4-pro' },
+    deepseek: { base_url: 'https://api.deepseek.com/v1',      model: 'deepseek-flash' },
     moonshot: { base_url: 'https://api.moonshot.cn/v1',       model: 'moonshot-v1-8k' },
     zhipu:    { base_url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4' },
     qwen:     { base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-turbo' },
@@ -1117,6 +1172,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         html += renderMessage(s.messages[i], i);
       }
       container.innerHTML = html;
+      highlightCode(container);
+      messagesPinned = true;
       container.scrollTop = container.scrollHeight;
     }
   }
@@ -1178,7 +1235,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           if (seg.type === 'reasoning' && seg.content) {
             html += '<details class="reasoning-block"><summary>思考过程</summary>' + escHtmlBr(seg.content) + '</details>';
           } else if (seg.type === 'text' && seg.content) {
-            html += '<div class="bubble">' + renderMarkdown(seg.content) + '</div>';
+            html += '<div class="bubble md-block">' + renderMarkdown(seg.content) + '</div>';
           } else if (seg.type === 'tool_call') {
             var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
             var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
@@ -1195,7 +1252,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           }
         }
       } else {
-        if (m.content) html += '<div class="bubble">' + renderMarkdown(m.content) + '</div>';
+        if (m.content) html += '<div class="bubble md-block">' + renderMarkdown(m.content) + '</div>';
         if (m.toolCalls && m.toolCalls.length > 0) {
           for (var t = 0; t < m.toolCalls.length; t++) {
             var tc = m.toolCalls[t];
@@ -1224,21 +1281,32 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     return escHtml(text).replace(/\n/g, '<br>');
   }
 
+  // markdown 渲染（marked + DOMPurify 防 XSS），流式与完成共用同一路径
   function renderMarkdown(text) {
     if (!text) return '';
-    var out = escHtml(text);
-    out = out.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-    out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    var parts = out.split(/<pre>[\s\S]*?<\/pre>/g);
-    var codes = out.match(/<pre>[\s\S]*?<\/pre>/g) || [];
-    var result = '';
-    for (var i = 0; i < parts.length; i++) {
-      result += parts[i].replace(/\n/g, '<br>');
-      if (codes[i]) result += codes[i];
+    if (typeof marked === 'undefined') return escHtmlBr(text);
+    var raw;
+    try {
+      raw = marked.parse(text);
+    } catch (e) {
+      return escHtmlBr(text);
     }
-    return result;
+    if (typeof DOMPurify !== 'undefined') {
+      try { raw = DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] }); } catch (e) {}
+    }
+    return raw;
+  }
+
+  // 对容器内尚未高亮的代码块执行语法高亮
+  function highlightCode(root) {
+    if (!root || typeof hljs === 'undefined') return;
+    var codes = root.querySelectorAll('pre code');
+    for (var i = 0; i < codes.length; i++) {
+      var el = codes[i];
+      if (el.getAttribute('data-hl') === '1') continue;
+      el.setAttribute('data-hl', '1');
+      try { hljs.highlightElement(el); } catch (e) {}
+    }
   }
 
   // ========== WEBSOCKET ==========
@@ -1528,7 +1596,10 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
   function getStreamState(sessionId) {
     if (!streamStates[sessionId]) {
-      streamStates[sessionId] = { msgIdx: -1, containerEl: null, lastType: '', lastEl: null, streaming: false };
+      streamStates[sessionId] = {
+        msgIdx: -1, containerEl: null, segEls: [], cursorEl: null,
+        progressEl: null, streaming: false, rafPending: false
+      };
     }
     return streamStates[sessionId];
   }
@@ -1555,8 +1626,9 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     if (!lastMsg || lastMsg.role !== 'assistant' || lastMsg._done) {
       s.messages.push({ role: 'assistant', content: '', reasoning: '', toolCalls: [], segments: [], _done: false });
       ss.msgIdx = s.messages.length - 1;
-      ss.lastType = '';
-      ss.lastEl = null;
+      ss.segEls = [];
+      ss.cursorEl = null;
+      ss.progressEl = null;
 
       if (visible) {
         var container = document.getElementById('messages');
@@ -1568,6 +1640,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         div.innerHTML = '<div class="stream-container" id="stream-' + sessionId + '-' + ss.msgIdx + '"></div>';
         container.appendChild(div);
         ss.containerEl = document.getElementById('stream-' + sessionId + '-' + ss.msgIdx);
+        messagesPinned = true;
       } else {
         ss.containerEl = null;
       }
@@ -1575,138 +1648,189 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       ss.msgIdx = s.messages.length - 1;
       if (visible && !ss.containerEl) {
         ss.containerEl = document.getElementById('stream-' + sessionId + '-' + ss.msgIdx);
+        if (ss.containerEl) {
+          ss.containerEl.innerHTML = '';
+          ss.segEls = [];
+          ss.cursorEl = null;
+          ss.progressEl = null;
+        }
       }
     }
     updateSendButton();
     return s.messages[s.messages.length - 1];
   }
 
+  function removeEl(el) {
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+  }
+
+  function createToolCardEl(seg) {
+    var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
+    var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
+    var card = document.createElement('div');
+    card.className = 'tool-card';
+    card.setAttribute('data-tool-name', seg.name);
+    var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
+      '<span class="tool-icon">🔧</span>' +
+      '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
+    if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
+    headerHtml += '</div><span class="tool-arrow">▼</span></div>';
+    var resultHtml;
+    if (seg.result !== undefined) {
+      resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (seg.error ? 'error' : 'success') + '">' + escHtml(seg.result) + '</pre></div>';
+    } else {
+      resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="success" style="opacity:0.6">执行中...</pre></div>';
+    }
+    card.innerHTML = headerHtml +
+      '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
+      '<pre>' + escHtml(JSON.stringify(seg.args, null, 2)) + '</pre>' +
+      resultHtml + '</div>';
+    return card;
+  }
+
+  function createSegEl(seg) {
+    if (seg.type === 'reasoning') {
+      var d = document.createElement('details');
+      d.className = 'reasoning-block';
+      d.open = true;
+      var sum = document.createElement('summary');
+      sum.textContent = '思考过程';
+      var rc = document.createElement('div');
+      rc.className = 'reasoning-content';
+      d.appendChild(sum);
+      d.appendChild(rc);
+      return d;
+    }
+    if (seg.type === 'text') {
+      var b = document.createElement('div');
+      b.className = 'bubble md-block';
+      return b;
+    }
+    if (seg.type === 'tool_call') {
+      return createToolCardEl(seg);
+    }
+    return document.createElement('div');
+  }
+
+  // 把光标放到最后一个段的合适位置（文本末尾）
+  function updateCursor(sessionId) {
+    var ss = streamStates[sessionId];
+    if (!ss || !ss.containerEl || !ss.streaming) return;
+    var s = getSessionById(sessionId);
+    var cur = s && s.messages[ss.msgIdx];
+    if (!cur || !cur.segments || cur.segments.length === 0) {
+      removeEl(ss.cursorEl);
+      return;
+    }
+    if (!ss.cursorEl) {
+      ss.cursorEl = document.createElement('span');
+      ss.cursorEl.className = 'stream-cursor';
+    }
+    var lastEl = ss.segEls[cur.segments.length - 1];
+    if (lastEl && lastEl.classList.contains('md-block')) {
+      var target = lastEl.lastElementChild;
+      if (target && /^(P|LI|H1|H2|H3|H4|H5|H6|TD|TH|BLOCKQUOTE|DIV)$/.test(target.tagName)) {
+        target.appendChild(ss.cursorEl);
+      } else {
+        lastEl.appendChild(ss.cursorEl);
+      }
+    } else if (lastEl) {
+      lastEl.appendChild(ss.cursorEl);
+    }
+  }
+
+  // 渲染一帧：补齐段 DOM、只更新变化的文本段、高亮、光标、滚动
+  function flushStreamRender(sessionId) {
+    var ss = streamStates[sessionId];
+    if (!ss || !ss.streaming || !ss.containerEl) return;
+    var s = getSessionById(sessionId);
+    var cur = s && s.messages[ss.msgIdx];
+    if (!cur) return;
+    var segs = cur.segments || [];
+
+    // 1. 数据新增的段，补齐对应 DOM（与 segEls 索引一一对应）
+    for (var i = ss.segEls.length; i < segs.length; i++) {
+      var el = createSegEl(segs[i]);
+      ss.segEls[i] = el;
+      ss.containerEl.appendChild(el);
+    }
+
+    // 2. 仅重渲染内容发生变化的 text / reasoning 段（增量，避免重复高亮与重排）
+    for (var j = 0; j < segs.length; j++) {
+      var seg = segs[j];
+      var segEl = ss.segEls[j];
+      if (!segEl) continue;
+      var len = (seg.content || '').length;
+      if (segEl._srcLen === len) continue;
+      if (seg.type === 'text') {
+        segEl.innerHTML = renderMarkdown(seg.content);
+        highlightCode(segEl);
+      } else if (seg.type === 'reasoning') {
+        var rc = segEl.querySelector('.reasoning-content');
+        if (rc) rc.textContent = seg.content || '';
+      }
+      segEl._srcLen = len;
+    }
+
+    // 3. 光标定位到最后一段
+    updateCursor(sessionId);
+
+    // 4. 仅当用户贴近底部时自动滚动
+    if (messagesPinned) scrollToBottom();
+  }
+
+  // 用 requestAnimationFrame 合并高频 chunk，每帧最多渲染一次
+  function scheduleStreamRender(sessionId) {
+    var ss = streamStates[sessionId];
+    if (!ss || ss.rafPending) return;
+    ss.rafPending = true;
+    requestAnimationFrame(function() {
+      var s2 = streamStates[sessionId];
+      if (!s2) return;
+      s2.rafPending = false;
+      flushStreamRender(sessionId);
+    });
+  }
+
   function rebuildStreamDOM(sessionId) {
     var ss = streamStates[sessionId];
     if (!ss || !ss.streaming) return;
-
     var s = getSessionById(sessionId);
     if (!s) return;
     var cur = s.messages[ss.msgIdx];
     if (!cur) return;
-
     var msgEl = document.getElementById('msg-' + ss.msgIdx);
     if (!msgEl) return;
-
     var containerId = 'stream-' + sessionId + '-' + ss.msgIdx;
     msgEl.className = 'msg assistant streaming';
     msgEl.innerHTML = '<div class="stream-container" id="' + containerId + '"></div>';
     ss.containerEl = document.getElementById(containerId);
-    ss.lastType = '';
-    ss.lastEl = null;
-
-    if (!ss.containerEl || !cur.segments) return;
-
-    for (var i = 0; i < cur.segments.length; i++) {
-      var seg = cur.segments[i];
-      if (seg.type === 'reasoning' && seg.content) {
-        var details = document.createElement('details');
-        details.className = 'reasoning-block';
-        details.open = true;
-        details.innerHTML = '<summary>思考过程</summary><div class="reasoning-content">' + escHtml(seg.content) + '</div>';
-        ss.containerEl.appendChild(details);
-        ss.lastType = 'reasoning';
-        ss.lastEl = details;
-      } else if (seg.type === 'text' && seg.content) {
-        var bubble = document.createElement('div');
-        bubble.className = 'bubble streaming-cursor';
-        bubble.textContent = seg.content;
-        ss.containerEl.appendChild(bubble);
-        ss.lastType = 'text';
-        ss.lastEl = bubble;
-      } else if (seg.type === 'tool_call') {
-        var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
-        var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
-        var card = document.createElement('div');
-        card.className = 'tool-card';
-        card.setAttribute('data-tool-name', seg.name);
-        var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
-          '<span class="tool-icon">🔧</span>' +
-          '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
-        if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
-        headerHtml += '</div><span class="tool-arrow">▼</span></div>';
-        var resultHtml = '';
-        if (seg.result !== undefined) {
-          resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="' + (seg.error ? 'error' : 'success') + '">' + escHtml(seg.result) + '</pre></div>';
-        } else {
-          resultHtml = '<div class="tool-result"><div class="tool-result-label">结果</div><pre class="success" style="opacity:0.6">执行中...</pre></div>';
-        }
-        card.innerHTML = headerHtml +
-          '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
-          '<pre>' + escHtml(JSON.stringify(seg.args, null, 2)) + '</pre>' +
-          resultHtml + '</div>';
-        ss.containerEl.appendChild(card);
-        ss.lastType = 'tool_call';
-        ss.lastEl = card;
-      }
-    }
-
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    ss.segEls = [];
+    ss.cursorEl = null;
+    ss.progressEl = null;
+    flushStreamRender(sessionId);
   }
 
   function appendReasoning(sessionId, chunk) {
     var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
-    var ss = getStreamState(sessionId);
     cur.reasoning += chunk;
     if (!cur.segments) cur.segments = [];
     var lastSeg = cur.segments[cur.segments.length - 1];
     if (lastSeg && lastSeg.type === 'reasoning') { lastSeg.content += chunk; }
     else { cur.segments.push({ type: 'reasoning', content: chunk }); }
-    var lastRS = null;
-    for (var si = cur.segments.length - 1; si >= 0; si--) {
-      if (cur.segments[si].type === 'reasoning') { lastRS = cur.segments[si]; break; }
-    }
-    var displayReasoning = lastRS ? lastRS.content : cur.reasoning;
-    if (ss.containerEl) {
-      if (ss.lastType === 'reasoning' && ss.lastEl) {
-        var rc = ss.lastEl.querySelector('.reasoning-content');
-        if (rc) rc.textContent = displayReasoning;
-      } else {
-        var details = document.createElement('details');
-        details.className = 'reasoning-block';
-        details.open = true;
-        details.innerHTML = '<summary>思考过程</summary><div class="reasoning-content">' + escHtml(displayReasoning) + '</div>';
-        ss.containerEl.appendChild(details);
-        ss.lastType = 'reasoning';
-        ss.lastEl = details;
-      }
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    }
+    scheduleStreamRender(sessionId);
   }
 
   function appendContent(sessionId, chunk) {
     var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
-    var ss = getStreamState(sessionId);
     cur.content += chunk;
     if (!cur.segments) cur.segments = [];
     var lastSeg = cur.segments[cur.segments.length - 1];
     if (lastSeg && lastSeg.type === 'text') { lastSeg.content += chunk; }
     else { cur.segments.push({ type: 'text', content: chunk }); }
-    var lastTS = null;
-    for (var si = cur.segments.length - 1; si >= 0; si--) {
-      if (cur.segments[si].type === 'text') { lastTS = cur.segments[si]; break; }
-    }
-    var displayContent = lastTS ? lastTS.content : cur.content;
-    if (ss.containerEl) {
-      if (ss.lastType === 'text' && ss.lastEl) {
-        ss.lastEl.textContent = displayContent;
-      } else {
-        var bubble = document.createElement('div');
-        bubble.className = 'bubble streaming-cursor';
-        bubble.textContent = displayContent;
-        ss.containerEl.appendChild(bubble);
-        ss.lastType = 'text';
-        ss.lastEl = bubble;
-      }
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    }
+    scheduleStreamRender(sessionId);
   }
 
   function updateToolCallProgress(sessionId, progress) {
@@ -1714,88 +1838,60 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
     var ss = getStreamState(sessionId);
-    if (ss.containerEl) {
-      var progressEl = ss.containerEl.querySelector('.tool-progress-indicator');
-      if (!progressEl) {
-        progressEl = document.createElement('div');
-        progressEl.className = 'tool-progress-indicator';
-        progressEl.style.cssText = 'padding:8px 12px;color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:6px;';
-        ss.containerEl.appendChild(progressEl);
-      }
-      var kb = (progress.args_bytes / 1024).toFixed(1);
-      var zhName = TOOL_NAMES_ZH[progress.name] || progress.name;
-      progressEl.innerHTML = '<span class="spinner-dot"></span> ' + escHtml(zhName) + ': 生成参数中... ' + kb + 'KB';
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    if (!ss.containerEl) return;
+    if (!ss.progressEl) {
+      ss.progressEl = document.createElement('div');
+      ss.progressEl.className = 'tool-progress-indicator';
+      ss.progressEl.style.cssText = 'padding:8px 12px;color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:6px;';
+      ss.containerEl.appendChild(ss.progressEl);
     }
+    var kb = (progress.args_bytes / 1024).toFixed(1);
+    var zhName = TOOL_NAMES_ZH[progress.name] || progress.name;
+    ss.progressEl.innerHTML = '<span class="spinner-dot"></span> ' + escHtml(zhName) + ': 生成参数中... ' + kb + 'KB';
+    if (messagesPinned) scrollToBottom();
   }
 
   function appendToolCall(sessionId, tc) {
     var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
     var ss = getStreamState(sessionId);
-    if (ss.containerEl) {
-      var progressEl = ss.containerEl.querySelector('.tool-progress-indicator');
-      if (progressEl) progressEl.remove();
-    }
-    cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, open: false });
+    removeEl(ss.progressEl);
+    ss.progressEl = null;
+    cur.toolCalls.push({ name: tc.name, args: tc.args, result: undefined, error: false, open: false });
     if (!cur.segments) cur.segments = [];
-    cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, open: false });
-    if (ss.containerEl) {
-      var zhName = TOOL_NAMES_ZH[tc.name] || tc.name;
-      var intent = (tc.args && tc.args.intent) ? tc.args.intent : '';
-      var card = document.createElement('div');
-      card.className = 'tool-card';
-      card.setAttribute('data-tool-name', tc.name);
-      var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
-        '<span class="tool-icon">🔧</span>' +
-        '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
-      if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
-      headerHtml += '</div><span class="tool-arrow">▼</span></div>';
-      card.innerHTML = headerHtml +
-        '<div class="tool-card-body"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">参数</div>' +
-        '<pre>' + escHtml(JSON.stringify(tc.args, null, 2)) + '</pre>' +
-        '<div class="tool-result"><div class="tool-result-label">结果</div>' +
-        '<pre class="success" style="opacity:0.6">执行中...</pre></div></div>';
-      ss.containerEl.appendChild(card);
-      ss.lastType = 'tool_call';
-      ss.lastEl = card;
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    }
+    cur.segments.push({ type: 'tool_call', name: tc.name, args: tc.args, result: undefined, error: false, open: false });
+    scheduleStreamRender(sessionId);
   }
 
   function updateToolResult(sessionId, result) {
     var cur = ensureStreamMsg(sessionId);
     if (!cur) return;
     var ss = getStreamState(sessionId);
-    var lastTc = null;
+    var errFlag = result.indexOf('错误') === 0;
     if (cur.toolCalls && cur.toolCalls.length > 0) {
-      lastTc = cur.toolCalls[cur.toolCalls.length - 1];
+      var lastTc = cur.toolCalls[cur.toolCalls.length - 1];
       lastTc.result = result;
-      lastTc.error = result.indexOf('错误') === 0;
+      lastTc.error = errFlag;
     }
-    if (cur.segments && cur.segments.length > 0) {
+    if (cur.segments) {
       for (var i = cur.segments.length - 1; i >= 0; i--) {
-        if (cur.segments[i].type === 'tool_call') {
+        if (cur.segments[i].type === 'tool_call' && cur.segments[i].result === undefined) {
           cur.segments[i].result = result;
-          cur.segments[i].error = result.indexOf('错误') === 0;
+          cur.segments[i].error = errFlag;
+          var segEl = ss.segEls[i];
+          if (segEl) {
+            var resultPre = segEl.querySelector('.tool-result pre');
+            if (resultPre) {
+              resultPre.textContent = result;
+              resultPre.style.opacity = '1';
+              resultPre.className = errFlag ? 'error' : 'success';
+            }
+          }
           break;
         }
       }
     }
-    if (ss.containerEl) {
-      var cards = ss.containerEl.querySelectorAll('.tool-card');
-      if (cards.length > 0) {
-        var lastCard = cards[cards.length - 1];
-        var resultPre = lastCard.querySelector('.tool-result pre');
-        if (resultPre) {
-          resultPre.textContent = result;
-          resultPre.style.opacity = '1';
-          resultPre.className = lastTc ? (lastTc.error ? 'error' : 'success') : 'success';
-        }
-      }
-      ss.lastType = 'tool_call';
-      document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
-    }
+    if (messagesPinned) scrollToBottom();
   }
 
   function finishStream(sessionId, response, error) {
@@ -1803,10 +1899,14 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var idx = ss.msgIdx;
     var wasVisible = isSessionVisible(sessionId);
     ss.streaming = false;
+    ss.rafPending = false;
+    removeEl(ss.cursorEl);
+    ss.cursorEl = null;
+    removeEl(ss.progressEl);
+    ss.progressEl = null;
     ss.msgIdx = -1;
     ss.containerEl = null;
-    ss.lastType = '';
-    ss.lastEl = null;
+    ss.segEls = [];
     if (streamTimers[sessionId]) { clearTimeout(streamTimers[sessionId]); delete streamTimers[sessionId]; }
 
     var s = getSessionById(sessionId);
@@ -1815,7 +1915,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var lastMsg = s.messages[s.messages.length - 1];
     if (lastMsg && lastMsg.role === 'assistant') {
       lastMsg._done = true;
-      if (response !== undefined && response !== null) lastMsg.content = response;
+      if (response !== undefined && response !== null && response !== '') lastMsg.content = response;
     }
     if (error) {
       s.messages.push({ role: 'assistant', content: '❌ ' + error, reasoning: '', toolCalls: [], segments: [], _done: true });
@@ -1823,26 +1923,26 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
     if (wasVisible) {
       var msgEl = document.getElementById('msg-' + idx);
-      if (msgEl && lastMsg && !error) {
-        var bubbles = msgEl.querySelectorAll('.bubble');
-        for (var b = 0; b < bubbles.length; b++) {
-          var segIdx = -1;
-          var segCount = 0;
+      if (error || !msgEl) {
+        renderMessages();
+      } else {
+        msgEl.classList.remove('streaming');
+        var curs = msgEl.querySelectorAll('.stream-cursor');
+        for (var ci = 0; ci < curs.length; ci++) removeEl(curs[ci]);
+        // 最后一次完整渲染，确保未闭合的语法被正确处理并做代码高亮
+        if (lastMsg && lastMsg.segments) {
+          var textSegs = [];
           for (var si = 0; si < lastMsg.segments.length; si++) {
-            if (lastMsg.segments[si].type === 'text') {
-              if (segCount === b) { segIdx = si; break; }
-              segCount++;
+            if (lastMsg.segments[si].type === 'text') textSegs.push(lastMsg.segments[si]);
+          }
+          var bubbles = msgEl.querySelectorAll('.bubble.md-block');
+          for (var bi = 0; bi < bubbles.length; bi++) {
+            if (textSegs[bi]) {
+              bubbles[bi].innerHTML = renderMarkdown(textSegs[bi].content);
+              highlightCode(bubbles[bi]);
             }
           }
-          if (segIdx >= 0) bubbles[b].innerHTML = renderMarkdown(lastMsg.segments[segIdx].content);
         }
-        var reasonings = msgEl.querySelectorAll('.reasoning-content');
-        for (var r = 0; r < reasonings.length; r++) {
-          reasonings[r].innerHTML = escHtmlBr(reasonings[r].textContent);
-        }
-        msgEl.classList.remove('streaming');
-      } else {
-        renderMessages();
       }
     }
 
@@ -2189,7 +2289,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
     renderMessages();
     renderSessions();
-    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+    messagesPinned = true;
+    scrollToBottom();
     updateSendButton();
 
     ensureConnected();
