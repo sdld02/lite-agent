@@ -13,7 +13,7 @@ import (
 // Store 会话文件存储
 type Store struct {
 	baseDir string
-	mu      sync.Mutex // 保护并发文件写入
+	mu      sync.RWMutex // 保护并发读写：写独占，读共享
 }
 
 // NewStore 创建 Store，自动创建存储目录
@@ -24,8 +24,30 @@ func NewStore(baseDir string) (*Store, error) {
 	return &Store{baseDir: baseDir}, nil
 }
 
+// validSessionID 校验 session ID 是否合法。
+// 仅允许字母、数字、'-' 和 '_'，防止路径穿越（如 "../xxx"）。
+func validSessionID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // Save 保存会话到 JSON 文件（原子写入：tmp + rename）
 func (s *Store) Save(session *Session) error {
+	if !validSessionID(session.ID) {
+		return fmt.Errorf("非法会话 ID: %q", session.ID)
+	}
 	if session.MessageCount == 0 {
 		return nil // 空会话不保存
 	}
@@ -57,6 +79,13 @@ func (s *Store) Save(session *Session) error {
 
 // Load 按 ID 加载完整会话
 func (s *Store) Load(id string) (*Session, error) {
+	if !validSessionID(id) {
+		return nil, fmt.Errorf("非法会话 ID: %q", id)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	data, err := os.ReadFile(s.filePath(id))
 	if err != nil {
 		return nil, fmt.Errorf("读取会话文件失败: %w", err)
@@ -70,12 +99,47 @@ func (s *Store) Load(id string) (*Session, error) {
 	return &session, nil
 }
 
-// List 列出所有会话元数据，按时间倒序
+// sessionMetaJSON 仅用于解析会话文件中的元数据字段。
+// 与 Session 共用 JSON 标签，但刻意不含 Messages，避免反序列化整个消息数组。
+type sessionMetaJSON struct {
+	ID           string `json:"id"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	Preview      string `json:"preview"`
+	MessageCount int    `json:"message_count"`
+}
+
+// loadMeta 只解析单个会话文件的元数据（调用方需自行持有读锁）
+func (s *Store) loadMeta(id string) (Meta, error) {
+	data, err := os.ReadFile(s.filePath(id))
+	if err != nil {
+		return Meta{}, err
+	}
+
+	var m sessionMetaJSON
+	if err := json.Unmarshal(data, &m); err != nil {
+		return Meta{}, err
+	}
+
+	return Meta{
+		ID:           m.ID,
+		CreatedAt:    m.CreatedAt,
+		UpdatedAt:    m.UpdatedAt,
+		Preview:      m.Preview,
+		MessageCount: m.MessageCount,
+	}, nil
+}
+
+// List 列出所有会话元数据，按时间倒序。
+// 仅读取每个会话文件的元数据字段，不解析 Messages，避免大文件开销。
 func (s *Store) List() ([]Meta, error) {
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("读取会话目录失败: %w", err)
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	var metas []Meta
 	for _, entry := range entries {
@@ -84,12 +148,15 @@ func (s *Store) List() ([]Meta, error) {
 		}
 
 		id := strings.TrimSuffix(entry.Name(), ".json")
-		session, err := s.Load(id)
+		meta, err := s.loadMeta(id)
 		if err != nil {
 			continue // 跳过损坏的文件
 		}
+		if meta.ID == "" {
+			meta.ID = id // 兼容极旧文件缺少 id 字段的情况
+		}
 
-		metas = append(metas, session.Meta())
+		metas = append(metas, meta)
 	}
 
 	// 按 ID 倒序排列（ID 本身包含时间，天然有序）
@@ -114,6 +181,13 @@ func (s *Store) Latest() (*Session, error) {
 
 // Delete 删除会话文件
 func (s *Store) Delete(id string) error {
+	if !validSessionID(id) {
+		return fmt.Errorf("非法会话 ID: %q", id)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	filePath := s.filePath(id)
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return fmt.Errorf("会话 %s 不存在", id)

@@ -144,8 +144,12 @@ type grepMatch struct {
 }
 
 // grepFileResult 单个文件的搜索结果
+//
+// file 为展示用路径（可能是相对路径）；absPath 为文件绝对路径，
+// 供 content 模式按需回读上下文行。
 type grepFileResult struct {
 	file    string
+	absPath string
 	matches []grepMatch
 	count   int
 	err     error
@@ -253,7 +257,7 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]interface{}) (*a
 	// 6. 格式化输出
 	switch outputMode {
 	case "content":
-		return t.formatContent(results, showLineNumbers, ctxBefore, ctxAfter, headLimit, offset)
+		return t.formatContent(results, showLineNumbers, ctxBefore, ctxAfter, headLimit, offset, multiline)
 	case "count":
 		return t.formatCount(results, headLimit, offset)
 	default:
@@ -385,8 +389,9 @@ func (t *GrepTool) searchFilesConcurrently(ctx context.Context, root string, fil
 		return infoI.ModTime().After(infoJ.ModTime())
 	})
 
-	// 转相对路径
+	// 转为展示用相对路径，同时保留绝对路径用于回读上下文
 	for i := range finalResults {
+		finalResults[i].absPath = finalResults[i].file
 		rel, err := filepath.Rel(root, finalResults[i].file)
 		if err == nil {
 			finalResults[i].file = rel
@@ -439,6 +444,7 @@ func (t *GrepTool) searchFile(filePath string, re *regexp.Regexp, multiline bool
 
 	return []grepFileResult{{
 		file:    filePath,
+		absPath: filePath,
 		matches: matches,
 		count:   len(matches),
 	}}
@@ -483,6 +489,7 @@ func (t *GrepTool) searchFileMultiline(filePath string, re *regexp.Regexp) []gre
 
 	return []grepFileResult{{
 		file:    filePath,
+		absPath: filePath,
 		matches: matches,
 		count:   len(matches),
 	}}
@@ -536,31 +543,77 @@ func findLineNumber(starts []int, offset int) int {
 // ============================================================================
 
 // formatContent 格式化 content 模式输出
-func (t *GrepTool) formatContent(results []grepFileResult, showLineNumbers bool, ctxBefore, ctxAfter, headLimit, offset int) (*agent.ToolResult, error) {
+//
+// 当 ctxBefore/ctxAfter 均 > 0 时输出匹配行的上下文（类似 grep -A/-B/-C）：
+//   - 匹配行用 ':' 分隔（file:line:content）
+//   - 上下文行用 '-' 分隔（file-line-content）
+//   - 相邻/重叠的匹配区间会合并为一个 hunk，不同 hunk 之间用 "--" 分隔
+//
+// 多行模式（multiline=true）下每个"匹配"可能是跨多行的文本片段，
+// 行号与文件行不再一一对应，因此忽略上下文参数，退化为仅输出匹配内容。
+func (t *GrepTool) formatContent(results []grepFileResult, showLineNumbers bool, ctxBefore, ctxAfter, headLimit, offset int, multiline bool) (*agent.ToolResult, error) {
+	useContext := (ctxBefore > 0 || ctxAfter > 0) && !multiline
+
 	var lines []string
 	totalLines := 0
-
-	// 应用 offset
 	lineIdx := 0
-	for _, fr := range results {
-		for _, m := range fr.matches {
-			if lineIdx >= offset {
-				var line string
-				if showLineNumbers {
-					line = fmt.Sprintf("%s:%d:%s", fr.file, m.lineNum, m.content)
-				} else {
-					line = fmt.Sprintf("%s:%s", fr.file, m.content)
+
+	if useContext {
+		// 上下文模式：按文件读取行、合并 hunk 后输出
+		for _, fr := range results {
+			// 先取出该文件在 offset 之后、headLimit 之前的匹配行号
+			matchLines := make(map[int]bool)
+			var matchedNums []int
+			for _, m := range fr.matches {
+				if lineIdx >= offset {
+					if headLimit > 0 && totalLines >= headLimit {
+						break
+					}
+					matchLines[m.lineNum] = true
+					matchedNums = append(matchedNums, m.lineNum)
+					totalLines++
 				}
-				lines = append(lines, line)
-				totalLines++
-				if headLimit > 0 && totalLines >= headLimit {
-					goto done
-				}
+				lineIdx++
 			}
-			lineIdx++
+			if len(matchedNums) == 0 {
+				if headLimit > 0 && totalLines >= headLimit {
+					break
+				}
+				continue
+			}
+
+			fileLines, err := readAllLines(fr.absPath)
+			if err != nil {
+				// 回读失败则退化为仅输出匹配内容
+				for _, m := range fr.matches {
+					if matchLines[m.lineNum] {
+						lines = append(lines, formatMatchLine(fr.file, m.lineNum, m.content, showLineNumbers, true))
+					}
+				}
+			} else {
+				lines = append(lines, formatFileWithContext(fr.file, fileLines, matchedNums, ctxBefore, ctxAfter, showLineNumbers)...)
+			}
+
+			if headLimit > 0 && totalLines >= headLimit {
+				break
+			}
+		}
+	} else {
+		// 原有行为：逐条输出匹配行
+	Loop:
+		for _, fr := range results {
+			for _, m := range fr.matches {
+				if lineIdx >= offset {
+					lines = append(lines, formatMatchLine(fr.file, m.lineNum, m.content, showLineNumbers, true))
+					totalLines++
+					if headLimit > 0 && totalLines >= headLimit {
+						break Loop
+					}
+				}
+				lineIdx++
+			}
 		}
 	}
-done:
 
 	content := strings.Join(lines, "\n")
 	if content == "" {
@@ -568,10 +621,7 @@ done:
 	}
 
 	// 截断过长的输出
-	applyLimit := false
-	if headLimit > 0 && totalLines >= headLimit {
-		applyLimit = true
-	}
+	applyLimit := headLimit > 0 && totalLines >= headLimit
 	if len(content) > maxGrepOutputChars {
 		content = content[:maxGrepOutputChars] + "\n... (输出被截断)"
 	}
@@ -589,6 +639,79 @@ done:
 			"numLines": totalLines,
 		},
 	}, nil
+}
+
+// formatMatchLine 格式化单条匹配行为输出行
+// isMatch=true 用 ':' 分隔（匹配行），false 用 '-' 分隔（上下文行）
+func formatMatchLine(file string, lineNum int, content string, showLineNumbers, isMatch bool) string {
+	sep := "-"
+	if isMatch {
+		sep = ":"
+	}
+	if showLineNumbers {
+		return fmt.Sprintf("%s%s%d%s%s", file, sep, lineNum, sep, content)
+	}
+	if isMatch {
+		return fmt.Sprintf("%s:%s", file, content)
+	}
+	return fmt.Sprintf("%s-%s", file, content)
+}
+
+// readAllLines 读取文件所有行（不保留行尾换行符）
+func readAllLines(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return []string{}, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
+// formatFileWithContext 对单个文件的一组匹配行号输出带上下文的 hunk
+// matchedNums 为匹配行号（1-based，需升序），会为每个匹配扩展 [n-ctxBefore, n+ctxAfter]
+func formatFileWithContext(file string, fileLines []string, matchedNums []int, ctxBefore, ctxAfter int, showLineNumbers bool) []string {
+	total := len(fileLines)
+	matchSet := make(map[int]bool, len(matchedNums))
+	for _, n := range matchedNums {
+		matchSet[n] = true
+	}
+
+	// 合并上下文区间，避免重复行
+	type span struct{ start, end int } // 1-based inclusive
+	var spans []span
+	for _, n := range matchedNums {
+		start := n - ctxBefore
+		if start < 1 {
+			start = 1
+		}
+		end := n + ctxAfter
+		if end > total {
+			end = total
+		}
+		if len(spans) > 0 && start <= spans[len(spans)-1].end+1 {
+			if end > spans[len(spans)-1].end {
+				spans[len(spans)-1].end = end
+			}
+		} else {
+			spans = append(spans, span{start, end})
+		}
+	}
+
+	var out []string
+	for si, sp := range spans {
+		if si > 0 {
+			out = append(out, "--")
+		}
+		for ln := sp.start; ln <= sp.end; ln++ {
+			isMatch := matchSet[ln]
+			out = append(out, formatMatchLine(file, ln, fileLines[ln-1], showLineNumbers, isMatch))
+		}
+	}
+	return out
 }
 
 // formatCount 格式化 count 模式输出

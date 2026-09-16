@@ -50,6 +50,12 @@ func NewOpenAIProvider(config OpenAIConfig) *OpenAIProvider {
 			Timeout: 0, // 不限总时长，由 context 控制取消
 			Transport: &http.Transport{
 				ResponseHeaderTimeout: 30 * time.Second,
+				// 连接池 / keep-alive：Chat 与 ChatStream 复用同一 Transport
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
 	}
@@ -310,14 +316,8 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []agent.Messag
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	// 流式请求：连接超时 30s，整体不限时
-	streamClient := &http.Client{
-		Timeout: 0,
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
-	}
-	resp, err := streamClient.Do(httpReq)
+	// 复用 provider 的 httpClient（连接池 / keep-alive），避免每次请求新建 Transport
+	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}

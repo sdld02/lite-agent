@@ -365,7 +365,7 @@ func (s *Server) StartTelegramBot() error {
 	// 构建 Bot 配置（复用当前 LLM 配置和 registry）
 	cfg := bot.Config{
 		Token:        s.tgBotToken,
-		ProviderCfg:  s.provider,
+		ProviderCfg:  s.GetProvider(),
 		SystemPrompt: s.systemPrompt,
 		MaxSteps:     s.maxSteps,
 		Registry:     s.registry,

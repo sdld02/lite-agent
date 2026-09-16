@@ -190,12 +190,20 @@ func (c *MCPClient) CallTool(ctx context.Context, toolName string, arguments map
 		return nil, err
 	}
 
+	// 持锁获取 transport 引用：避免与 Disconnect() 并发时读到 nil 或被替换的 transport
+	c.mu.Lock()
+	transport := c.transport
+	c.mu.Unlock()
+	if transport == nil {
+		return nil, fmt.Errorf("MCP server %s is not connected", c.name)
+	}
+
 	params := CallToolParams{
 		Name:      toolName,
 		Arguments: arguments,
 	}
 
-	resultRaw, err := c.transport.SendRequest(ctx, MethodToolsCall, params)
+	resultRaw, err := transport.SendRequest(ctx, MethodToolsCall, params)
 	if err != nil {
 		// 连接错误时标记为断开，下次自动重连
 		c.mu.Lock()

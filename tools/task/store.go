@@ -149,24 +149,32 @@ func (s *FileTaskStore) Update(taskListID, taskID string, updates map[string]int
 		return nil, nil
 	}
 
-	// 应用更新
+	// 应用更新（类型安全：忽略类型不符的字段，避免 LLM 传入非字符串导致 panic）
 	if v, ok := updates["subject"]; ok {
-		existing.Subject = v.(string)
+		if s, ok := asString(v); ok {
+			existing.Subject = s
+		}
 	}
 	if v, ok := updates["description"]; ok {
-		existing.Description = v.(string)
+		if s, ok := asString(v); ok {
+			existing.Description = s
+		}
 	}
 	if v, ok := updates["activeForm"]; ok {
-		existing.ActiveForm = v.(string)
+		if s, ok := asString(v); ok {
+			existing.ActiveForm = s
+		}
 	}
 	if v, ok := updates["status"]; ok {
-		existing.Status = TaskStatus(v.(string))
+		if s, ok := asString(v); ok {
+			existing.Status = TaskStatus(s)
+		}
 	}
 	if v, ok := updates["owner"]; ok {
 		if v == nil {
 			existing.Owner = ""
-		} else {
-			existing.Owner = v.(string)
+		} else if s, ok := asString(v); ok {
+			existing.Owner = s
 		}
 	}
 	if v, ok := updates["blocks"]; ok {
@@ -405,6 +413,13 @@ func removeFromSlice(slice []string, item string) []string {
 		}
 	}
 	return result
+}
+
+// asString 类型安全地将 interface{} 转换为 string。
+// 第二个返回值表示转换是否成功（类型不符时返回 false，不 panic）。
+func asString(v interface{}) (string, bool) {
+	s, ok := v.(string)
+	return s, ok
 }
 
 func toStringSlice(v interface{}) []string {

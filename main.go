@@ -252,25 +252,8 @@ func main() {
 
 	// 创建工具注册表（子Agent系统需要）
 	registry := tools.NewToolRegistry()
-	registry.Register("calculator", func() agent.Tool { return tools.NewCalculatorTool() })
-	registry.Register("system_info", func() agent.Tool { return tools.NewSystemInfoTool() })
-	registry.Register("shell", func() agent.Tool { return tools.NewShellToolUnsafe() })
-	registry.Register("file_edit", func() agent.Tool { return tools.NewFileEditTool() })
-	registry.Register("file_write", func() agent.Tool { return tools.NewFileWriteTool() })
-	registry.Register("file_diff", func() agent.Tool { return tools.NewFileDiffTool() })
-	registry.Register("file_read", func() agent.Tool { return tools.NewFileReadTool() })
-	registry.Register("code_probe", func() agent.Tool { return tools.NewCodeProbeTool() })
-	registry.Register("code_stats", func() agent.Tool { return tools.NewCodeStatsTool() })
-	registry.Register("lsp", func() agent.Tool { return tools.NewLSPTool() })
-	registry.Register("task_create", func() agent.Tool { return tools.NewTaskCreateTool() })
-	registry.Register("task_update", func() agent.Tool { return tools.NewTaskUpdateTool() })
-	registry.Register("task_list", func() agent.Tool { return tools.NewTaskListTool() })
-	registry.Register("task_get", func() agent.Tool { return tools.NewTaskGetTool() })
-	registry.Register("ask_user_question", func() agent.Tool { return tools.NewAskUserQuestionTool() })
-	registry.Register("grep", func() agent.Tool { return tools.NewGrepTool() })
-	registry.Register("glob", func() agent.Tool { return tools.NewGlobTool() })
-	registry.Register("web_fetch", func() agent.Tool { return tools.NewWebFetchTool(providerCfg) })
-	registry.Register("web_search", func() agent.Tool { return tools.NewWebSearchTool() })
+	baseSpecs := baseToolSpecs(providerCfg)
+	registerBaseTools(registry, baseSpecs)
 
 	// 获取项目根目录（用于加载项目级技能）
 	projectRoot, _ := os.Getwd()
@@ -298,36 +281,12 @@ func main() {
 	}
 	ag.SetSystemPrompt(finalPrompt)
 
-	// 注册内置工具
-	ag.AddTool(tools.NewCalculatorTool())
-	ag.AddTool(tools.NewSystemInfoTool())
-	ag.AddTool(tools.NewShellToolUnsafe())
-	ag.AddTool(tools.NewFileEditTool())
-	ag.AddTool(tools.NewFileWriteTool())
-	ag.AddTool(tools.NewFileDiffTool())
-	ag.AddTool(tools.NewFileReadTool())
-	ag.AddTool(tools.NewCodeProbeTool())
-	ag.AddTool(tools.NewCodeStatsTool())
-	ag.AddTool(tools.NewLSPTool())
-	// Task 任务管理工具（支持多 Agent）
-	ag.AddTool(tools.NewTaskCreateTool())
-	ag.AddTool(tools.NewTaskUpdateTool())
-	ag.AddTool(tools.NewTaskListTool())
-	ag.AddTool(tools.NewTaskGetTool())
+	// 装配内置工具（基础工具 + agent/skill/mcp 三个特殊工具）
+	addBaseTools(ag, baseSpecs)
 	// Agent 子Agent工具
 	ag.AddTool(tools.NewAgentTool(registry, providerCfg))
-	// Skill 技能工具
+	// Skill 技能工具（与注册表共享同一实例）
 	ag.AddTool(skillTool)
-	// AskUserQuestion 用户提问工具
-	ag.AddTool(tools.NewAskUserQuestionTool())
-	// Grep 代码搜索工具
-	ag.AddTool(tools.NewGrepTool())
-	// Glob 文件名匹配工具
-	ag.AddTool(tools.NewGlobTool())
-	// WebFetch 网页抓取工具
-	ag.AddTool(tools.NewWebFetchTool(providerCfg))
-	// WebSearch 网页搜索工具
-	ag.AddTool(tools.NewWebSearchTool())
 	// MCP 工具
 	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
 		ag.AddTool(tools.NewMCPTool(mgr))
@@ -342,45 +301,21 @@ func main() {
 	// === Server 模式分支 ===
 	if *serverMode {
 		// 构建工具工厂列表（为每个连接创建独立工具实例）
-		toolFactories := []server.ToolFactory{
-			func() agent.Tool { return tools.NewCalculatorTool() },
-			func() agent.Tool { return tools.NewSystemInfoTool() },
-			func() agent.Tool { return tools.NewShellToolUnsafe() },
-			func() agent.Tool { return tools.NewFileEditTool() },
-			func() agent.Tool { return tools.NewFileWriteTool() },
-			func() agent.Tool { return tools.NewFileDiffTool() },
-			func() agent.Tool { return tools.NewFileReadTool() },
-			func() agent.Tool { return tools.NewCodeProbeTool() },
-			func() agent.Tool { return tools.NewCodeStatsTool() },
-			func() agent.Tool { return tools.NewLSPTool() },
-			func() agent.Tool { return tools.NewTaskCreateTool() },
-			func() agent.Tool { return tools.NewTaskUpdateTool() },
-			func() agent.Tool { return tools.NewTaskListTool() },
-			func() agent.Tool { return tools.NewTaskGetTool() },
-			// Skill 技能工具（每个连接独立实例，共享 filesystem）
-			func() agent.Tool {
-				workDir, _ := os.Getwd()
-				return tools.NewSkillTool(homeDir, workDir, registry, providerCfg)
-			},
-			// AskUserQuestion 用户提问工具
-			func() agent.Tool { return tools.NewAskUserQuestionTool() },
-			// Grep 代码搜索工具
-			func() agent.Tool { return tools.NewGrepTool() },
-			// Glob 文件名匹配工具
-			func() agent.Tool { return tools.NewGlobTool() },
-			// WebFetch 网页抓取工具
-			func() agent.Tool { return tools.NewWebFetchTool(providerCfg) },
-			// WebSearch 网页搜索工具
-			func() agent.Tool { return tools.NewWebSearchTool() },
-			// MCP 工具（共享全局管理器）
-			func() agent.Tool {
-				if mgr := tools.GetMCPManager(); mgr != nil {
-					return tools.NewMCPTool(mgr)
-				}
-				return nil
-			},
-			// Agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
-		}
+		// 基础工具来自统一规格表，再补充 skill / mcp 两个每连接特殊工厂
+		toolFactories := baseToolFactories(baseSpecs)
+		// Skill 技能工具（每个连接独立实例，共享 filesystem）
+		toolFactories = append(toolFactories, func() agent.Tool {
+			workDir, _ := os.Getwd()
+			return tools.NewSkillTool(homeDir, workDir, registry, providerCfg)
+		})
+		// MCP 工具（共享全局管理器）
+		toolFactories = append(toolFactories, func() agent.Tool {
+			if mgr := tools.GetMCPManager(); mgr != nil {
+				return tools.NewMCPTool(mgr)
+			}
+			return nil
+		})
+		// 注：agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
 
 		// 创建 WebSocket 服务（注册表用于子 Agent 工具）
 		srv := server.NewServer(*serverAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories, taskMgr)
@@ -413,29 +348,7 @@ func main() {
 		fmt.Printf("🌐 服务地址: ws://%s/ws\n", *serverAddr)
 		fmt.Printf("❤️  健康检查: http://%s/health\n", *serverAddr)
 		fmt.Println()
-		fmt.Println("已加载工具:")
-		fmt.Println("  - calculator   : 数学计算")
-		fmt.Println("  - system_info  : 系统信息")
-		fmt.Println("  - shell        : Shell 命令执行")
-		fmt.Println("  - file_edit    : 文件编辑")
-		fmt.Println("  - file_write   : 文件写入")
-		fmt.Println("  - file_diff    : 文件比较")
-		fmt.Println("  - file_read    : 文件读取")
-		fmt.Println("  - code_probe   : 项目结构探查")
-		fmt.Println("  - code_stats   : 代码行数统计")
-		fmt.Println("  - lsp          : LSP 代码智能")
-		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
-		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
-		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
-		fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
-		fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
-		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
-		fmt.Println("  - web_fetch         : 网页抓取与分析")
-		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
-		if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
-			fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
-		}
-		fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
+		printToolBanner(true)
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -485,28 +398,7 @@ func main() {
 		fmt.Printf("📡 API: %s\n", finalBaseURL)
 		fmt.Printf("🤖 Model: %s\n", finalModel)
 		fmt.Println()
-		fmt.Println("已加载工具:")
-		fmt.Println("  - calculator   : 数学计算")
-		fmt.Println("  - system_info  : 系统信息")
-		fmt.Println("  - shell        : Shell 命令执行")
-		fmt.Println("  - file_edit    : 文件编辑")
-		fmt.Println("  - file_write   : 文件写入")
-		fmt.Println("  - file_diff    : 文件比较")
-		fmt.Println("  - file_read    : 文件读取")
-		fmt.Println("  - code_probe   : 项目结构探查")
-		fmt.Println("  - code_stats   : 代码行数统计")
-		fmt.Println("  - lsp          : LSP 代码智能")
-		fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
-		fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
-		fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
-		fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
-		fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
-		fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
-		fmt.Println("  - web_fetch         : 网页抓取与分析")
-		fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
-		if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
-			fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
-		}
+		printToolBanner(false)
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -584,29 +476,7 @@ func main() {
 		fmt.Println("⚡ 流式输出: 已启用")
 	}
 	fmt.Println()
-	fmt.Println("已加载工具:")
-	fmt.Println("  - calculator   : 数学计算")
-	fmt.Println("  - system_info  : 系统信息")
-	fmt.Println("  - shell        : Shell 命令执行")
-	fmt.Println("  - file_edit    : 文件编辑")
-	fmt.Println("  - file_write   : 文件写入")
-	fmt.Println("  - file_diff    : 文件比较")
-	fmt.Println("  - file_read    : 文件读取")
-	fmt.Println("  - code_probe   : 项目结构探查")
-	fmt.Println("  - code_stats   : 代码行数统计")
-	fmt.Println("  - lsp          : LSP 代码智能")
-	fmt.Println("  - agent        : 子Agent系统 (general-purpose/Explore/Plan)")
-	fmt.Println("  - task_*       : 任务管理 (create/update/list/get)")
-	fmt.Println("  - skill        : 技能系统 (commit/review-pr/explain-code/plan)")
-	fmt.Println("  - ask_user_question : 用户提问（执行中向用户发起多选题）")
-	fmt.Println("  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）")
-	fmt.Println("  - glob              : 文件名匹配（纯Go，支持 ** 递归）")
-	fmt.Println("  - web_fetch         : 网页抓取与分析")
-	fmt.Println("  - web_search        : DuckDuckGo 网页搜索")
-	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
-		fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
-	}
-	fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
+	printToolBanner(true)
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
