@@ -1239,8 +1239,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
           } else if (seg.type === 'tool_call') {
             var zhName = TOOL_NAMES_ZH[seg.name] || seg.name;
             var intent = (seg.args && seg.args.intent) ? seg.args.intent : '';
-            html += '<div class="tool-card" onclick="event.stopPropagation();this.classList.toggle(\'open\')">';
-            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span>';
+            html += '<div class="tool-card">';
+            html += '<div class="tool-card-header" onclick="event.stopPropagation();if(!window.getSelection().toString())this.parentElement.classList.toggle(\'open\')"><span class="tool-icon">🔧</span>';
             html += '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
             if (intent) html += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
             html += '</div><span class="tool-arrow">▼</span></div>';
@@ -1258,8 +1258,8 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
             var tc = m.toolCalls[t];
             var zhName = TOOL_NAMES_ZH[tc.name] || tc.name;
             var intent = (tc.args && tc.args.intent) ? tc.args.intent : '';
-            html += '<div class="tool-card" onclick="event.stopPropagation();this.classList.toggle(\'open\')">';
-            html += '<div class="tool-card-header"><span class="tool-icon">🔧</span>';
+            html += '<div class="tool-card">';
+            html += '<div class="tool-card-header" onclick="event.stopPropagation();if(!window.getSelection().toString())this.parentElement.classList.toggle(\'open\')"><span class="tool-icon">🔧</span>';
             html += '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
             if (intent) html += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
             html += '</div><span class="tool-arrow">▼</span></div>';
@@ -1670,7 +1670,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var card = document.createElement('div');
     card.className = 'tool-card';
     card.setAttribute('data-tool-name', seg.name);
-    var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();this.parentElement.classList.toggle(\'open\')">' +
+    var headerHtml = '<div class="tool-card-header" onclick="event.stopPropagation();if(!window.getSelection().toString())this.parentElement.classList.toggle(\'open\')">' +
       '<span class="tool-icon">🔧</span>' +
       '<div class="tool-info"><span class="tool-name">' + escHtml(zhName) + '</span>';
     if (intent) headerHtml += '<span class="tool-intent">· ' + escHtml(intent) + '</span>';
