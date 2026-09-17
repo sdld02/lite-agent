@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"lite-agent/agent"
@@ -93,7 +94,7 @@ var mathFuncs = map[string]func(float64) float64{
 type tokenType int
 
 const (
-	tokNumber  tokenType = iota
+	tokNumber tokenType = iota
 	tokPlus
 	tokMinus
 	tokMul
@@ -202,10 +203,10 @@ func (l *lexer) next() token {
 
 // parser 递归下降解析器
 type parser struct {
-	lex    *lexer
-	cur    token
-	peek   token
-	ctx    context.Context
+	lex  *lexer
+	cur  token
+	peek token
+	ctx  context.Context
 }
 
 func newParser(input string, ctx context.Context) *parser {
@@ -415,7 +416,8 @@ func (t *TimeTool) Parameters() map[string]interface{} {
 }
 
 func (t *TimeTool) Execute(ctx context.Context, args map[string]interface{}) (*agent.ToolResult, error) {
+	now := time.Now()
 	return &agent.ToolResult{
-		Content: fmt.Sprintf("当前时间: %s", runtime.GOOS),
+		Content: fmt.Sprintf("当前时间: %s（%s）", now.Format("2006-01-02 15:04:05"), now.Weekday()),
 	}, nil
 }

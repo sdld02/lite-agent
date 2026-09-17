@@ -74,7 +74,7 @@ func getSystemInfo() map[string]interface{} {
 }
 
 // buildDefaultSystemPrompt 构建默认系统提示词（包含动态系统信息和技能列表）
-func buildDefaultSystemPrompt(skillsPrompt string) string {
+func buildDefaultSystemPrompt(toolsSection, skillsPrompt string) string {
 	sysInfo := getSystemInfo()
 
 	basePrompt := fmt.Sprintf(`你是一个智能助手，运行在以下系统环境中：
@@ -91,28 +91,7 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 
 ## 可用工具
 你有以下工具可以使用：
-- calculator: 执行数学计算
-- system_info: 获取系统信息
-- shell: 执行系统命令
-- file_edit: 编辑文件内容（精确字符串替换）
-- file_write: 写入文件内容（创建或覆盖文件）
-- file_diff: 比较两个文件的差异
-- file_read: 读取文件内容
-- code_probe: 探查项目结构（支持 summary/structure/flat/grouped/tree 模式）
-- code_stats: 统计代码行数（支持按语言分组统计）
-- lsp: LSP 代码智能（跳转定义、查找引用、悬停文档、文档符号、工作区符号、调用层次等）
-- agent: 启动子Agent处理复杂的多步骤任务（支持 general-purpose、Explore（只读搜索）、Plan（只读规划）等类型）
-- task_create: 创建任务
-- task_update: 更新任务状态
-- task_list: 列出所有任务
-- task_get: 获取任务详情
-- skill: 调用技能（斜杠命令），如 commit、review-pr、explain-code、plan 等
-- ask_user_question: 在任务执行过程中向用户提问（多选题），用于收集偏好、澄清歧义、获取决策
-- grep: 强大的代码搜索工具（纯Go实现，零外部依赖，跨平台可用）。ALWAYS 使用 grep 工具进行文件内容搜索，NEVER 通过 shell 调用 grep/rg 等外部命令。支持正则表达式、glob过滤、三种输出模式、分页。
-- glob: 快速文件名模式匹配工具，支持 ** 递归匹配（如 "**/*_test.go"），返回按修改时间排序的文件列表，适用于按文件名模式查找文件
-- web_fetch: 抓取指定 URL 内容并用 AI 分析，适用于阅读文档、文章等网页内容
-- web_search: 通过 DuckDuckGo 搜索互联网获取最新信息，返回搜索结果的标题、URL 和摘要
-- mcp: 调用 MCP (Model Context Protocol) 服务器提供的工具。使用方式：先用 operation="list_tools" 查看服务器提供的工具，再用 operation="call_tool" 调用具体工具
+%s
 
 %s
 
@@ -131,6 +110,7 @@ func buildDefaultSystemPrompt(skillsPrompt string) string {
 		sysInfo["user"],
 		sysInfo["homeDir"],
 		sysInfo["workDir"],
+		toolsSection,
 		skillsPrompt,
 		sysInfo["os"],
 	)
@@ -253,7 +233,8 @@ func main() {
 
 	// 创建工具注册表（子Agent系统需要）
 	registry := tools.NewToolRegistry()
-	baseSpecs := baseToolSpecs(providerCfg)
+	cat := toolCatalog(providerCfg)
+	baseSpecs := baseToolSpecs(cat)
 	registerBaseTools(registry, baseSpecs)
 
 	// 获取项目根目录（用于加载项目级技能）
@@ -272,7 +253,7 @@ func main() {
 	// 设置系统提示词 - 始终使用动态构建的提示词，并允许自定义提示词作为补充
 	skillsPrompt := skill.FormatSkillsPrompt(skillTool.GetSkills(), 3000)
 	mcpPrompt := tools.FormatMCPServersPrompt(tools.GetMCPManager())
-	finalPrompt := buildDefaultSystemPrompt(skillsPrompt)
+	finalPrompt := buildDefaultSystemPrompt(toolPromptSection(cat), skillsPrompt)
 	if mcpPrompt != "" {
 		finalPrompt += mcpPrompt
 	}
@@ -349,7 +330,7 @@ func main() {
 		fmt.Printf("🌐 服务地址: ws://%s/ws\n", *serverAddr)
 		fmt.Printf("❤️  健康检查: http://%s/health\n", *serverAddr)
 		fmt.Println()
-		printToolBanner(true)
+		printToolBanner(cat, true)
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -399,7 +380,7 @@ func main() {
 		fmt.Printf("📡 API: %s\n", finalBaseURL)
 		fmt.Printf("🤖 Model: %s\n", finalModel)
 		fmt.Println()
-		printToolBanner(false)
+		printToolBanner(cat, false)
 		fmt.Println("=================================")
 		fmt.Println()
 
@@ -477,7 +458,7 @@ func main() {
 		fmt.Println("⚡ 流式输出: 已启用")
 	}
 	fmt.Println()
-	printToolBanner(true)
+	printToolBanner(cat, true)
 	fmt.Println()
 	fmt.Println("输入 'quit' 或 'exit' 退出")
 	fmt.Println("输入 'prompt' 查看完整系统提示词")
@@ -796,45 +777,121 @@ func truncatePrompt(prompt string, maxLen int) string {
 }
 
 // ============================================================================
-// 工具装配的单一数据源
+// 工具装配与展示的单一数据源
 //
-// 说明：内置工具的「注册 / 装配 / 每连接工厂 / 启动横幅展示」原先分散在
-// 多处的硬编码列表中，增删工具极易遗漏。此处集中为唯一来源：
-//   - baseToolSpecs  -> 注册表、主 Agent、Server 每连接工具工厂共用
-//   - toolBannerLines -> 三种模式启动横幅共用
-//   - agent / skill / mcp 三个特殊工具因行为差异，仍显式处理
+// 内置工具的「注册 / 装配 / 每连接工厂 / 系统提示词 / 启动横幅」全部由此处的
+// toolCatalog 派生，增删工具只需改这一处，避免多处硬编码导致的不同步。
 // ============================================================================
 
-// toolSpec 描述一个内置工具的构造规格（工厂）。
+// toolRole 描述工具在装配中的角色（不同角色的装配方式不同）。
+type toolRole int
+
+const (
+	roleBase  toolRole = iota // 基础工具：统一注册 / 装配 / 每连接工厂
+	roleAgent                 // 子Agent工具：仅加入主 Agent（避免子 Agent 无限递归）
+	roleSkill                 // 技能工具：CLI/Telegram 共享实例，Server 每连接独立实例
+	roleMCP                   // MCP 工具：仅在配置了 MCP 服务器时启用
+)
+
+// toolSpec 基础工具的构造规格（供注册 / 装配 / 工厂使用）。
 type toolSpec struct {
 	name    string
 	factory func() agent.Tool
 }
 
-// baseToolSpecs 返回内置工具的构造规格（不含 agent / skill / mcp 三个特殊工具）。
+// toolMeta 单个工具的元数据：装配角色 + 展示描述。
+type toolMeta struct {
+	name       string
+	role       toolRole
+	factory    func() agent.Tool // 仅 roleBase 使用
+	promptDesc string            // 系统提示词描述（空表示不写入提示词）
+	banner     string            // 启动横幅整行（空表示不在横幅展示，如被 task_* 聚合）
+}
+
+// toolCatalog 返回全部工具的元数据（按展示顺序，即提示词与横幅的顺序）。
 // providerCfg 供 web_fetch 等需要 LLM 的工具使用。
-func baseToolSpecs(providerCfg agent.LLMProvider) []toolSpec {
-	return []toolSpec{
-		{"calculator", func() agent.Tool { return tools.NewCalculatorTool() }},
-		{"system_info", func() agent.Tool { return tools.NewSystemInfoTool() }},
-		{"shell", func() agent.Tool { return tools.NewShellToolUnsafe() }},
-		{"file_edit", func() agent.Tool { return tools.NewFileEditTool() }},
-		{"file_write", func() agent.Tool { return tools.NewFileWriteTool() }},
-		{"file_diff", func() agent.Tool { return tools.NewFileDiffTool() }},
-		{"file_read", func() agent.Tool { return tools.NewFileReadTool() }},
-		{"code_probe", func() agent.Tool { return tools.NewCodeProbeTool() }},
-		{"code_stats", func() agent.Tool { return tools.NewCodeStatsTool() }},
-		{"lsp", func() agent.Tool { return tools.NewLSPTool() }},
-		{"task_create", func() agent.Tool { return tools.NewTaskCreateTool() }},
-		{"task_update", func() agent.Tool { return tools.NewTaskUpdateTool() }},
-		{"task_list", func() agent.Tool { return tools.NewTaskListTool() }},
-		{"task_get", func() agent.Tool { return tools.NewTaskGetTool() }},
-		{"ask_user_question", func() agent.Tool { return tools.NewAskUserQuestionTool() }},
-		{"grep", func() agent.Tool { return tools.NewGrepTool() }},
-		{"glob", func() agent.Tool { return tools.NewGlobTool() }},
-		{"web_fetch", func() agent.Tool { return tools.NewWebFetchTool(providerCfg) }},
-		{"web_search", func() agent.Tool { return tools.NewWebSearchTool() }},
+func toolCatalog(providerCfg agent.LLMProvider) []toolMeta {
+	return []toolMeta{
+		{name: "calculator", role: roleBase, factory: func() agent.Tool { return tools.NewCalculatorTool() },
+			promptDesc: "执行数学计算", banner: "  - calculator   : 数学计算"},
+		{name: "system_info", role: roleBase, factory: func() agent.Tool { return tools.NewSystemInfoTool() },
+			promptDesc: "获取系统信息", banner: "  - system_info  : 系统信息"},
+		{name: "current_time", role: roleBase, factory: func() agent.Tool { return tools.NewTimeTool() },
+			promptDesc: "获取当前日期和时间", banner: "  - current_time : 当前日期和时间"},
+		{name: "shell", role: roleBase, factory: func() agent.Tool { return tools.NewShellToolUnsafe() },
+			promptDesc: "执行系统命令", banner: "  - shell        : Shell 命令执行"},
+		{name: "file_edit", role: roleBase, factory: func() agent.Tool { return tools.NewFileEditTool() },
+			promptDesc: "编辑文件内容（精确字符串替换）", banner: "  - file_edit    : 文件编辑"},
+		{name: "file_write", role: roleBase, factory: func() agent.Tool { return tools.NewFileWriteTool() },
+			promptDesc: "写入文件内容（创建或覆盖文件）", banner: "  - file_write   : 文件写入"},
+		{name: "file_diff", role: roleBase, factory: func() agent.Tool { return tools.NewFileDiffTool() },
+			promptDesc: "比较两个文件的差异", banner: "  - file_diff    : 文件比较"},
+		{name: "file_read", role: roleBase, factory: func() agent.Tool { return tools.NewFileReadTool() },
+			promptDesc: "读取文件内容", banner: "  - file_read    : 文件读取"},
+		{name: "code_probe", role: roleBase, factory: func() agent.Tool { return tools.NewCodeProbeTool() },
+			promptDesc: "探查项目结构（支持 summary/structure/flat/grouped/tree/recent 模式）", banner: "  - code_probe   : 项目结构探查"},
+		{name: "code_stats", role: roleBase, factory: func() agent.Tool { return tools.NewCodeStatsTool() },
+			promptDesc: "统计代码行数（支持按语言分组统计）", banner: "  - code_stats   : 代码行数统计"},
+		{name: "lsp", role: roleBase, factory: func() agent.Tool { return tools.NewLSPTool() },
+			promptDesc: "LSP 代码智能（跳转定义、查找引用、悬停文档、文档符号、工作区符号、调用层次等）", banner: "  - lsp          : LSP 代码智能"},
+		{name: "agent", role: roleAgent,
+			promptDesc: "启动子Agent处理复杂的多步骤任务（支持 general-purpose、Explore（只读搜索）、Plan（只读规划）等类型）", banner: "  - agent        : 子Agent系统 (general-purpose/Explore/Plan)"},
+		{name: "task_create", role: roleBase, factory: func() agent.Tool { return tools.NewTaskCreateTool() },
+			promptDesc: "创建任务", banner: "  - task_*       : 任务管理 (create/update/list/get)"},
+		{name: "task_update", role: roleBase, factory: func() agent.Tool { return tools.NewTaskUpdateTool() },
+			promptDesc: "更新任务状态"},
+		{name: "task_list", role: roleBase, factory: func() agent.Tool { return tools.NewTaskListTool() },
+			promptDesc: "列出所有任务"},
+		{name: "task_get", role: roleBase, factory: func() agent.Tool { return tools.NewTaskGetTool() },
+			promptDesc: "获取任务详情"},
+		{name: "skill", role: roleSkill,
+			promptDesc: "调用技能（斜杠命令），如 commit、review-pr、explain-code、plan 等", banner: "  - skill        : 技能系统 (commit/review-pr/explain-code/plan)"},
+		{name: "ask_user_question", role: roleBase, factory: func() agent.Tool { return tools.NewAskUserQuestionTool() },
+			promptDesc: "在任务执行过程中向用户提问（多选题），用于收集偏好、澄清歧义、获取决策", banner: "  - ask_user_question : 用户提问（执行中向用户发起多选题）"},
+		{name: "grep", role: roleBase, factory: func() agent.Tool { return tools.NewGrepTool() },
+			promptDesc: `强大的代码搜索工具（纯Go实现，零外部依赖，跨平台可用）。ALWAYS 使用 grep 工具进行文件内容搜索，NEVER 通过 shell 调用 grep/rg 等外部命令。支持正则表达式、glob过滤、三种输出模式、分页。`, banner: "  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）"},
+		{name: "glob", role: roleBase, factory: func() agent.Tool { return tools.NewGlobTool() },
+			promptDesc: `快速文件名模式匹配工具，支持 ** 递归匹配（如 "**/*_test.go"），返回按修改时间排序的文件列表，适用于按文件名模式查找文件`, banner: "  - glob              : 文件名匹配（纯Go，支持 ** 递归）"},
+		{name: "web_fetch", role: roleBase, factory: func() agent.Tool { return tools.NewWebFetchTool(providerCfg) },
+			promptDesc: "抓取指定 URL 内容并用 AI 分析，适用于阅读文档、文章等网页内容", banner: "  - web_fetch         : 网页抓取与分析"},
+		{name: "web_search", role: roleBase, factory: func() agent.Tool { return tools.NewWebSearchTool() },
+			promptDesc: "通过 DuckDuckGo 搜索互联网获取最新信息，返回搜索结果的标题、URL 和摘要", banner: "  - web_search        : DuckDuckGo 网页搜索"},
+		{name: "mcp", role: roleMCP,
+			promptDesc: `调用 MCP (Model Context Protocol) 服务器提供的工具。使用方式：先用 operation="list_tools" 查看服务器提供的工具，再用 operation="call_tool" 调用具体工具`, banner: "  - mcp               : MCP 协议工具 (按需加载)"},
 	}
+}
+
+// baseToolSpecs 从工具表中筛选出基础工具（roleBase）的构造规格。
+func baseToolSpecs(cat []toolMeta) []toolSpec {
+	var specs []toolSpec
+	for _, m := range cat {
+		if m.role == roleBase && m.factory != nil {
+			specs = append(specs, toolSpec{name: m.name, factory: m.factory})
+		}
+	}
+	return specs
+}
+
+// mcpServersEnabled 返回是否配置并启用了 MCP 服务器。
+func mcpServersEnabled() bool {
+	mgr := tools.GetMCPManager()
+	return mgr != nil && mgr.HasServers()
+}
+
+// toolPromptSection 由工具表生成系统提示词的“可用工具”清单。
+// roleMCP 仅在配置了 MCP 服务器时才列出，避免提示词与实际注册不一致。
+func toolPromptSection(cat []toolMeta) string {
+	var lines []string
+	for _, m := range cat {
+		if m.promptDesc == "" {
+			continue
+		}
+		if m.role == roleMCP && !mcpServersEnabled() {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", m.name, m.promptDesc))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // registerBaseTools 将基础工具注册到子 Agent 工具注册表。
@@ -860,38 +917,18 @@ func baseToolFactories(specs []toolSpec) []server.ToolFactory {
 	return factories
 }
 
-// toolBannerLines 启动横幅中展示的工具清单（单一来源，三种模式共用）。
-// 保留手工对齐的展示格式；task_* 在展示上合并为一行。
-var toolBannerLines = []string{
-	"  - calculator   : 数学计算",
-	"  - system_info  : 系统信息",
-	"  - shell        : Shell 命令执行",
-	"  - file_edit    : 文件编辑",
-	"  - file_write   : 文件写入",
-	"  - file_diff    : 文件比较",
-	"  - file_read    : 文件读取",
-	"  - code_probe   : 项目结构探查",
-	"  - code_stats   : 代码行数统计",
-	"  - lsp          : LSP 代码智能",
-	"  - agent        : 子Agent系统 (general-purpose/Explore/Plan)",
-	"  - task_*       : 任务管理 (create/update/list/get)",
-	"  - skill        : 技能系统 (commit/review-pr/explain-code/plan)",
-	"  - ask_user_question : 用户提问（执行中向用户发起多选题）",
-	"  - grep              : 代码搜索（纯Go，正则/glob/三种输出模式）",
-	"  - glob              : 文件名匹配（纯Go，支持 ** 递归）",
-	"  - web_fetch         : 网页抓取与分析",
-	"  - web_search        : DuckDuckGo 网页搜索",
-}
-
-// printToolBanner 打印“已加载工具”清单（含条件性的 MCP 行）。
-// showSkillCount 为 true 时额外打印内置技能数量（Telegram 模式保持不打印以维持原输出）。
-func printToolBanner(showSkillCount bool) {
+// printToolBanner 打印“已加载工具”清单（由工具表生成，含条件性的 MCP 行）。
+// showSkillCount 为 true 时额外打印内置技能数量（Telegram 模式维持不打印以保持原输出）。
+func printToolBanner(cat []toolMeta, showSkillCount bool) {
 	fmt.Println("已加载工具:")
-	for _, line := range toolBannerLines {
-		fmt.Println(line)
-	}
-	if mgr := tools.GetMCPManager(); mgr != nil && mgr.HasServers() {
-		fmt.Println("  - mcp               : MCP 协议工具 (按需加载)")
+	for _, m := range cat {
+		if m.banner == "" {
+			continue
+		}
+		if m.role == roleMCP && !mcpServersEnabled() {
+			continue
+		}
+		fmt.Println(m.banner)
 	}
 	if showSkillCount {
 		fmt.Printf("  📂 内置技能: %d 个\n", len(skill.BuiltinSkills))
