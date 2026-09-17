@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 )
 
 // SkillTool 技能工具
@@ -16,9 +17,9 @@ import (
 //   - inline：在当前对话中展开技能提示词（返回给 LLM）
 //   - fork：启动子 Agent 隔离执行
 type SkillTool struct {
-	skills    []SkillDefinition // 所有已加载的技能定义
-	loader    *Loader           // 技能加载器
-	runner    SkillRunner      // fork 模式下的子 Agent 运行器（可为 nil）
+	skills      []SkillDefinition // 所有已加载的技能定义
+	loader      *Loader           // 技能加载器
+	runner      SkillRunner       // fork 模式下的子 Agent 运行器（可为 nil）
 	invocations []SkillInvocation // 记录技能调用历史
 }
 
@@ -313,11 +314,8 @@ func FormatSkillsPrompt(skills []SkillDefinition, maxChars int) string {
 			if s.IsBuiltIn() {
 				sb.WriteString(entries[i])
 			} else {
-				// 截断描述到剩余预算
-				shortDesc := s.Description
-				if len(shortDesc) > 80 {
-					shortDesc = shortDesc[:77] + "..."
-				}
+				// 截断描述到剩余预算（UTF-8 安全）
+				shortDesc := strutil.TruncateRunes(s.Description, 77, "...")
 				sb.WriteString(fmt.Sprintf("- **%s**: %s", s.Name, shortDesc))
 			}
 			sb.WriteString("\n")

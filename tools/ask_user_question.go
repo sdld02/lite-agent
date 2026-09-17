@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 )
 
 // ============================================================================
@@ -155,10 +156,8 @@ func (t *AskUserQuestionTool) Execute(ctx context.Context, args map[string]inter
 			Header:   getString(qm, "header"),
 		}
 
-		// 校验 header 长度
-		if len([]rune(q.Header)) > 12 {
-			q.Header = string([]rune(q.Header)[:12])
-		}
+		// 校验 header 长度（UTF-8 安全）
+		q.Header = strutil.TruncateRunes(q.Header, 12, "")
 
 		// 解析 multi_select
 		if ms, ok := qm["multi_select"].(bool); ok {

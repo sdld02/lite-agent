@@ -16,6 +16,7 @@ import (
 
 	"lite-agent/agent"
 	"lite-agent/bot"
+	"lite-agent/internal/strutil"
 	"lite-agent/llm"
 	"lite-agent/server"
 	"lite-agent/session"
@@ -768,12 +769,9 @@ func main() {
 	}
 }
 
-// truncatePrompt 截断提示词用于显示
+// truncatePrompt 截断提示词用于显示（UTF-8 安全）
 func truncatePrompt(prompt string, maxLen int) string {
-	if len(prompt) <= maxLen {
-		return prompt
-	}
-	return prompt[:maxLen] + "..."
+	return strutil.TruncateRunes(prompt, maxLen, "...")
 }
 
 // ============================================================================

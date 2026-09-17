@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 )
 
 // ============================================================================
@@ -23,7 +24,7 @@ import (
 
 const (
 	maxFetchContentLength = 10 * 1024 * 1024 // 10MB
-	maxFetchOutputChars   = 100_000           // 100K 字符截断
+	maxFetchOutputChars   = 100_000          // 100K 字符截断
 	fetchTimeout          = 60 * time.Second
 	maxFetchRedirects     = 10
 	fetchCacheTTL         = 15 * time.Minute
@@ -114,9 +115,9 @@ var privateCIDRs = []string{
 	"172.16.0.0/12",
 	"192.168.0.0/16",
 	"169.254.0.0/16", // link-local
-	"::1/128",         // IPv6 loopback
-	"fc00::/7",        // IPv6 unique local
-	"fe80::/10",       // IPv6 link-local
+	"::1/128",        // IPv6 loopback
+	"fc00::/7",       // IPv6 unique local
+	"fe80::/10",      // IPv6 link-local
 }
 
 func isPrivateHost(host string) bool {
@@ -212,10 +213,8 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 	// 6. HTML → 纯文本
 	textContent := extractTextFromHTML(string(bodyBytes), contentType)
 
-	// 7. 截断
-	if len(textContent) > maxFetchOutputChars {
-		textContent = textContent[:maxFetchOutputChars] + "\n\n[内容过长，已截断...]"
-	}
+	// 7. 截断（UTF-8 安全）
+	textContent = strutil.TruncateBytes(textContent, maxFetchOutputChars, "\n\n[内容过长，已截断...]")
 
 	if len(strings.TrimSpace(textContent)) == 0 {
 		return &agent.ToolResult{
@@ -248,7 +247,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 		}
 	} else {
 		// 无 LLM 时直接返回原始文本片段
-		analysisResult = fmt.Sprintf("（无 LLM 分析）原始内容摘要:\n\n%s", textContent[:min(len(textContent), 2000)])
+		analysisResult = fmt.Sprintf("（无 LLM 分析）原始内容摘要:\n\n%s", strutil.TruncateRunes(textContent, 2000, ""))
 	}
 
 	// 9. 构建结果
@@ -299,12 +298,9 @@ func extractTextFromHTML(rawHTML, contentType string) string {
 		return ""
 	}
 
-	// 非 HTML 内容直接返回（但截断）
+	// 非 HTML 内容直接返回（但截断，UTF-8 安全）
 	if contentType != "" && !strings.Contains(contentType, "text/html") {
-		if len(rawHTML) > maxFetchOutputChars {
-			rawHTML = rawHTML[:maxFetchOutputChars]
-		}
-		return rawHTML
+		return strutil.TruncateBytes(rawHTML, maxFetchOutputChars, "")
 	}
 
 	// 去掉 script、style、注释

@@ -14,9 +14,10 @@ import (
 	"unicode/utf8"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 	"lite-agent/session"
-	agentpkg "lite-agent/tools/agent"
 	"lite-agent/tools"
+	agentpkg "lite-agent/tools/agent"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -26,11 +27,11 @@ type ToolFactory func() agent.Tool
 
 // Config Telegram Bot 配置
 type Config struct {
-	Token        string               // Bot Token
-	SystemPrompt string               // 系统提示词
-	MaxSteps     int                  // 最大执行步数
+	Token        string                 // Bot Token
+	SystemPrompt string                 // 系统提示词
+	MaxSteps     int                    // 最大执行步数
 	Registry     *agentpkg.ToolRegistry // 工具注册表（用于子 Agent 工具）
-	ProviderCfg  agent.LLMProvider    // LLM Provider
+	ProviderCfg  agent.LLMProvider      // LLM Provider
 }
 
 // Bot Telegram Bot 结构体
@@ -47,13 +48,13 @@ type Bot struct {
 
 // pendingQuestion 等待用户回答的问题状态
 type pendingQuestion struct {
-	questions   []tools.Question
-	answers     map[string]string // 已收集的答案
-	currentIdx  int              // 当前问题索引
-	multiSelected []string       // 多选已选中的选项
-	waitingOther bool            // 是否等待"其他"文字输入
-	msgID       int              // 发送的问题消息 ID（用于更新）
-	done        chan struct{}     // 所有问题回答完毕后关闭
+	questions     []tools.Question
+	answers       map[string]string // 已收集的答案
+	currentIdx    int               // 当前问题索引
+	multiSelected []string          // 多选已选中的选项
+	waitingOther  bool              // 是否等待"其他"文字输入
+	msgID         int               // 发送的问题消息 ID（用于更新）
+	done          chan struct{}     // 所有问题回答完毕后关闭
 }
 
 // chatRunner 单个聊天会话的运行状态
@@ -203,7 +204,6 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	b.handleChat(chatID, text)
 }
 
-
 // ============================================================================
 // ask_user_question Telegram 实现
 // ============================================================================
@@ -211,7 +211,7 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 // Callback data 前缀常量
 const (
 	cbPrefixSelect = "aq:sel:"  // 选择某个选项（单选/多选）
-	cbPrefixDone   = "aq:done" // 多选完成
+	cbPrefixDone   = "aq:done"  // 多选完成
 	cbPrefixOther  = "aq:other" // 选择"其他"
 )
 
@@ -656,11 +656,8 @@ func (b *Bot) handleChat(chatID int64, text string) {
 			return
 		}
 
-		// Bug 修复 #3: 按 rune 截断，避免破坏 UTF-8 多字节字符
-		text := truncateByRunes(rawText, 4000)
-		if len(text) < len(rawText) {
-			text += "\n\n...（内容过长已截断）"
-		}
+		// 按 rune 截断，避免破坏 UTF-8 多字节字符（UTF-8 安全）
+		text := strutil.TruncateRunes(rawText, 4000, "\n\n...（内容过长已截断）")
 
 		edit := tgbotapi.NewEditMessageText(chatID, thinkingMsg.MessageID, text)
 		// 不设置 ParseMode，使用纯文本，避免流式未完成时 MarkdownV2 解析失败
@@ -746,11 +743,8 @@ func (b *Bot) handleChat(chatID int64, text string) {
 				if event.ToolResult.IsError {
 					b.sendText(chatID, fmt.Sprintf("❌ 错误: %s", event.ToolResult.Content))
 				} else {
-					// 工具结果太长则截断
-					result := event.ToolResult.Content
-					if utf8.RuneCountInString(result) > 500 {
-						result = truncateByRunes(result, 500) + "..."
-					}
+					// 工具结果太长则截断（UTF-8 安全）
+					result := strutil.TruncateRunes(event.ToolResult.Content, 500, "...")
 					b.sendText(chatID, fmt.Sprintf("✅ 完成: %s", result))
 				}
 			}
@@ -939,10 +933,7 @@ func (b *Bot) listSessions(chatID int64) {
 		sb.WriteString(fmt.Sprintf("%s`%s`\n", marker, m.ID[:8]))
 		sb.WriteString(fmt.Sprintf("   %s \\| %d 条消息\n", displayTime, m.MessageCount))
 		if m.Preview != "" {
-			preview := m.Preview
-			if utf8.RuneCountInString(preview) > 60 {
-				preview = truncateByRunes(preview, 60) + "..."
-			}
+			preview := strutil.TruncateRunes(m.Preview, 60, "...")
 			sb.WriteString(fmt.Sprintf("   _%s_\n", escapeMarkdownV2(preview)))
 		}
 		sb.WriteString("\n")
@@ -1209,15 +1200,6 @@ func parseTelegramRetryAfter(errMsg string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
-}
-
-// truncateByRunes 按 rune 安全截断字符串
-func truncateByRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes])
 }
 
 // splitMessage 按最大 rune 数分割消息（尽量在换行处分割）

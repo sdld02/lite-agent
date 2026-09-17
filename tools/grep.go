@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 )
 
 // ============================================================================
@@ -477,10 +478,8 @@ func (t *GrepTool) searchFileMultiline(filePath string, re *regexp.Regexp) []gre
 	for _, m := range allMatches {
 		lineNum := findLineNumber(lineStarts, m[0])
 		matchedText := text[m[0]:m[1]]
-		// 截断太长的匹配内容
-		if len(matchedText) > 500 {
-			matchedText = matchedText[:500] + "..."
-		}
+		// 截断太长的匹配内容（UTF-8 安全）
+		matchedText = strutil.TruncateRunes(matchedText, 500, "...")
 		matches = append(matches, grepMatch{
 			lineNum: lineNum,
 			content: matchedText,
@@ -622,9 +621,7 @@ func (t *GrepTool) formatContent(results []grepFileResult, showLineNumbers bool,
 
 	// 截断过长的输出
 	applyLimit := headLimit > 0 && totalLines >= headLimit
-	if len(content) > maxGrepOutputChars {
-		content = content[:maxGrepOutputChars] + "\n... (输出被截断)"
-	}
+	content = strutil.TruncateBytes(content, maxGrepOutputChars, "\n... (输出被截断)")
 
 	result := content
 	if applyLimit {
@@ -787,8 +784,8 @@ func (t *GrepTool) formatFilesWithMatches(results []grepFileResult, headLimit, o
 	return &agent.ToolResult{
 		Content: result,
 		RichData: map[string]interface{}{
-			"mode":     "files_with_matches",
-			"numFiles": len(results),
+			"mode":      "files_with_matches",
+			"numFiles":  len(results),
 			"filenames": filenames,
 		},
 	}, nil

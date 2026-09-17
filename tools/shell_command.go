@@ -8,26 +8,28 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"lite-agent/internal/strutil"
 )
 
 // ShellStatus 命令执行状态
 type ShellStatus int
 
 const (
-	ShellStatusRunning     ShellStatus = iota
-	ShellStatusCompleted               // 正常退出
-	ShellStatusKilled                  // 被 kill
-	ShellStatusBackgrounded            // 超时后台化，进程仍在运行
+	ShellStatusRunning      ShellStatus = iota
+	ShellStatusCompleted                // 正常退出
+	ShellStatusKilled                   // 被 kill
+	ShellStatusBackgrounded             // 超时后台化，进程仍在运行
 )
 
 // ShellResult 命令执行结果
 type ShellResult struct {
-	Stdout      string
-	Stderr      string
-	ExitCode    int
-	Interrupted bool   // 被 kill 终止
-	Backgrounded bool  // 已后台化，输出为部分内容
-	TimedOut    bool   // 超时触发
+	Stdout       string
+	Stderr       string
+	ExitCode     int
+	Interrupted  bool // 被 kill 终止
+	Backgrounded bool // 已后台化，输出为部分内容
+	TimedOut     bool // 超时触发
 }
 
 // OnTimeoutFn 超时回调，返回 true 表示后台化，false 表示 kill
@@ -73,10 +75,10 @@ func (b *lockedBuffer) String() string {
 // onTimeout: 超时回调，返回 true 后台化，false 直接 kill；nil 则直接 kill
 func spawnShellCommand(ctx context.Context, command string, timeoutMs int, onTimeout OnTimeoutFn) (*ShellCommand, error) {
 	sc := &ShellCommand{
-		status:     ShellStatusRunning,
-		outBuf:     &lockedBuffer{},
-		result:     make(chan ShellResult, 1),
-		onTimeout:  onTimeout,
+		status:       ShellStatusRunning,
+		outBuf:       &lockedBuffer{},
+		result:       make(chan ShellResult, 1),
+		onTimeout:    onTimeout,
 		backgroundCh: make(chan struct{}),
 	}
 
@@ -231,11 +233,9 @@ func (sc *ShellCommand) waitProcess(ctx context.Context) {
 func (sc *ShellCommand) emitResult(exitCode int, backgrounded bool, interrupted bool) {
 	output := sc.outBuf.String()
 
-	// 限制输出长度
+	// 限制输出长度（UTF-8 安全截断）
 	const maxOutputBytes = 10000
-	if len(output) > maxOutputBytes {
-		output = output[:maxOutputBytes] + "\n... (输出被截断)"
-	}
+	output = strutil.TruncateBytes(output, maxOutputBytes, "\n... (输出被截断)")
 
 	sc.result <- ShellResult{
 		Stdout:       output,

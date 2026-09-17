@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"lite-agent/internal/strutil"
+
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -21,10 +23,10 @@ const (
 
 // FileDiffInput 输入参数
 type FileDiffInput struct {
-	FilePathA   string `json:"file_path_a"`
-	FilePathB   string `json:"file_path_b"`
-	Format      string `json:"format"`                // "unified", "html", "simple"，默认 "unified"
-	ContextLines int   `json:"context_lines"`         // 上下文行数，默认 3
+	FilePathA    string `json:"file_path_a"`
+	FilePathB    string `json:"file_path_b"`
+	Format       string `json:"format"`        // "unified", "html", "simple"，默认 "unified"
+	ContextLines int    `json:"context_lines"` // 上下文行数，默认 3
 	//MaxFileSize int64  `json:"max_file_size"`         // 自定义最大文件大小（字节）
 }
 
@@ -129,10 +131,10 @@ func FileDiffTool(input FileDiffInput) (*FileDiffOutput, error) {
 
 	// 9. 生成行级 diff
 	dmp := diffmatchpatch.New()
-	
+
 	// 优化 diff 性能
 	dmp.DiffTimeout = 2.0 // 2 秒超时
-	
+
 	runesA, runesB, lineArray := dmp.DiffLinesToRunes(contentA, contentB)
 	diffs := dmp.DiffMainRunes(runesA, runesB, false)
 	diffs = dmp.DiffCharsToLines(diffs, lineArray)
@@ -141,7 +143,7 @@ func FileDiffTool(input FileDiffInput) (*FileDiffOutput, error) {
 	// 10. 根据格式生成输出
 	var diffOutput string
 	var linesAdded, linesDeleted int
-	
+
 	switch input.Format {
 	case "html":
 		diffOutput = dmp.DiffPrettyHtml(diffs)
@@ -153,10 +155,8 @@ func FileDiffTool(input FileDiffInput) (*FileDiffOutput, error) {
 		diffOutput, linesAdded, linesDeleted = formatUnifiedDiff(diffs, pathA, pathB, input.ContextLines)
 	}
 
-	// 11. 限制输出大小
-	if len(diffOutput) > maxDiffOutputSize {
-		diffOutput = diffOutput[:maxDiffOutputSize] + "\n... (diff truncated due to size limit)"
-	}
+	// 11. 限制输出大小（UTF-8 安全）
+	diffOutput = strutil.TruncateBytes(diffOutput, maxDiffOutputSize, "\n... (diff truncated due to size limit)")
 
 	return &FileDiffOutput{
 		FileA:        pathA,
@@ -180,7 +180,7 @@ func formatUnifiedDiff(diffs []diffmatchpatch.Diff, pathA, pathB string, context
 	for _, d := range diffs {
 		// 正确分割行，保留末尾换行信息
 		lines := splitLines(d.Text)
-		
+
 		switch d.Type {
 		case diffmatchpatch.DiffDelete:
 			for _, line := range lines {
@@ -212,7 +212,7 @@ func formatSimpleDiff(diffs []diffmatchpatch.Diff) (string, int, int) {
 
 	for _, d := range diffs {
 		lines := splitLines(d.Text)
-		
+
 		switch d.Type {
 		case diffmatchpatch.DiffDelete:
 			for _, line := range lines {
@@ -256,10 +256,10 @@ func writeContextLines(sb *strings.Builder, lines []string, contextLines int) {
 		for i := 0; i < contextLines; i++ {
 			sb.WriteString("  " + nonEmptyLines[i] + "\n")
 		}
-		
+
 		hidden := len(nonEmptyLines) - contextLines*2
 		sb.WriteString(fmt.Sprintf("  ... (%d lines unchanged) ...\n", hidden))
-		
+
 		// 显示后 contextLines 行
 		start := len(nonEmptyLines) - contextLines
 		for i := start; i < len(nonEmptyLines); i++ {
@@ -273,21 +273,21 @@ func splitLines(text string) []string {
 	if text == "" {
 		return []string{""}
 	}
-	
+
 	lines := strings.Split(text, "\n")
-	
+
 	// 如果原始文本以换行结尾，Split 会产生最后一个空元素
 	if strings.HasSuffix(text, "\n") {
 		if len(lines) > 0 && lines[len(lines)-1] == "" {
 			lines = lines[:len(lines)-1]
 		}
 	}
-	
+
 	// 确保至少有一行
 	if len(lines) == 0 {
 		return []string{""}
 	}
-	
+
 	return lines
 }
 
@@ -295,7 +295,7 @@ func splitLines(text string) []string {
 func countDiffLines(diffs []diffmatchpatch.Diff) (int, int) {
 	added := 0
 	deleted := 0
-	
+
 	for _, d := range diffs {
 		lines := splitLines(d.Text)
 		switch d.Type {
@@ -305,7 +305,7 @@ func countDiffLines(diffs []diffmatchpatch.Diff) (int, int) {
 			deleted += len(lines)
 		}
 	}
-	
+
 	return added, deleted
 }
 
@@ -315,7 +315,7 @@ func decodeToUTF8(data []byte) (string, error) {
 	if utf8.Valid(data) {
 		return string(data), nil
 	}
-	
+
 	// TODO: 可以添加其他编码支持，如 GBK、ISO-8859-1 等
 	// 这里简单返回原始字符串，可能会导致乱码
 	return string(data), nil
@@ -326,7 +326,7 @@ func expandPath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	
+
 	// 展开 ~ 到用户主目录
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		homeDir, err := os.UserHomeDir()
@@ -339,19 +339,18 @@ func expandPath(path string) (string, error) {
 			path = filepath.Join(homeDir, path[2:])
 		}
 	}
-	
+
 	// 展开环境变量
 	path = os.ExpandEnv(path)
-	
+
 	// 转换为绝对路径
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("failed to get absolute path: %w", err)
 	}
-	
+
 	return absPath, nil
 }
-
 
 // isBinaryFile 检测是否为二进制文件
 func isBinaryFile(data []byte) bool {
@@ -360,7 +359,7 @@ func isBinaryFile(data []byte) bool {
 	if len(data) < checkLen {
 		checkLen = len(data)
 	}
-	
+
 	// 查找 NULL 字节（二进制文件的典型特征）
 	for i := 0; i < checkLen; i++ {
 		if data[i] == 0 {

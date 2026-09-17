@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/internal/strutil"
 )
 
 // Session 完整会话对象
@@ -64,11 +65,7 @@ func (s *Session) SetMessages(msgs []agent.Message) {
 	}
 }
 
-// truncate 截断字符串到指定 rune 长度
+// truncate 截断字符串到指定 rune 长度（UTF-8 安全）
 func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen]) + "..."
+	return strutil.TruncateRunes(s, maxLen, "...")
 }

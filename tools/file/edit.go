@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 
+	"lite-agent/internal/strutil"
+
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
@@ -278,9 +280,7 @@ func findSimilarMatches(content, oldStr string) string {
 	for _, m := range matches {
 		sb.WriteString(fmt.Sprintf("  Line %d (similarity %d%%):\n", m.lineNum, m.score))
 		for _, line := range strings.Split(m.content, "\n") {
-			if len(line) > 100 {
-				line = line[:100] + "..."
-			}
+			line = strutil.TruncateRunes(line, 100, "...")
 			sb.WriteString(fmt.Sprintf("    %s\n", line))
 		}
 	}
