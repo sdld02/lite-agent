@@ -14,6 +14,7 @@ import (
 
 	"lite-agent/agent"
 	"lite-agent/bot"
+	"lite-agent/internal/appconfig"
 	"lite-agent/llm"
 	"lite-agent/mcp"
 	"lite-agent/session"
@@ -68,6 +69,9 @@ type Server struct {
 	// 用户主目录（用于写入用户级 MCP 配置）
 	homeDir string
 
+	// 配置存储（用于将运行时配置变更回写到 config.json）
+	cfgStore *appconfig.Store
+
 	// HTTP 服务器
 	httpServer *http.Server
 }
@@ -113,6 +117,11 @@ func NewServer(addr string, store *session.Store, registry *agentpkg.ToolRegistr
 	}
 }
 
+// SetConfigStore 注入配置存储，使运行时配置变更可回写到 config.json
+func (s *Server) SetConfigStore(store *appconfig.Store) {
+	s.cfgStore = store
+}
+
 // Start 启动 HTTP 服务，监听并处理 WebSocket 升级请求
 func (s *Server) Start() error {
 	mux := http.NewServeMux()
@@ -139,8 +148,8 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("正在关闭 WebSocket 服务...")
 
-	// 停止 Telegram Bot
-	s.StopTelegramBot()
+	// 停止 Telegram Bot（服务关闭，不改变持久化的 enabled 状态）
+	s.StopTelegramBot(false)
 
 	// 关闭所有活跃连接
 	s.connMu.RLock()
@@ -268,6 +277,9 @@ func (s *Server) SetLLMConfig(input LLMConfigInfo) LLMConfigInfo {
 
 	log.Printf("⚙️  LLM 配置已更新: url=%s model=%s", s.llmConfig.BaseURL, s.llmConfig.Model)
 
+	// 持久化到 config.json，重启后保留
+	s.persistLLMLocked()
+
 	// 直接构建返回值，不能调用 GetLLMConfig（会死锁：当前已持有写锁，GetLLMConfig 会尝试获取读锁）
 	cfg := s.llmConfig
 	maskedKey := cfg.APIKey
@@ -342,6 +354,7 @@ func (s *Server) SetTelegramConfig(token string) {
 	s.tgBotMu.Lock()
 	defer s.tgBotMu.Unlock()
 	s.tgBotToken = token
+	s.persistTelegramLocked()
 }
 
 // StartTelegramBot 启动 Telegram Bot（异步，不阻塞）
@@ -382,6 +395,7 @@ func (s *Server) StartTelegramBot() error {
 	s.tgBotUsername = "" // 启动后会从 API 获取
 	s.tgBotStatus = "running"
 	s.tgBotError = ""
+	s.persistTelegramLocked()
 
 	// 在 goroutine 中启动（Start 是阻塞的）
 	_, cancel := context.WithCancel(context.Background())
@@ -411,8 +425,10 @@ func (s *Server) StartTelegramBot() error {
 	return nil
 }
 
-// StopTelegramBot 停止 Telegram Bot
-func (s *Server) StopTelegramBot() {
+// StopTelegramBot 停止 Telegram Bot。
+// persist 为 true 时把「已停止」状态回写 config.json（供外部主动停止使用）；
+// 服务自身关闭（Shutdown）时传 false，避免影响下次开机自启行为。
+func (s *Server) StopTelegramBot(persist bool) {
 	s.tgBotMu.Lock()
 	defer s.tgBotMu.Unlock()
 
@@ -425,6 +441,43 @@ func (s *Server) StopTelegramBot() {
 	s.tgBotError = ""
 	s.tgBotUsername = ""
 	log.Println("🛑 Telegram Bot 已停止")
+	if persist {
+		s.persistTelegramLocked()
+	}
+}
+
+// persistLLMLocked 将当前 LLM 配置回写 config.json（需持有 llmCfgMu）
+func (s *Server) persistLLMLocked() {
+	if s.cfgStore == nil {
+		return
+	}
+	cfg := s.llmConfig
+	providerName := inferProviderName(cfg.BaseURL, cfg.Model)
+	if err := s.cfgStore.Update(func(c *appconfig.Config) error {
+		c.LLM.Provider = providerName
+		c.LLM.APIKey = cfg.APIKey
+		c.LLM.BaseURL = cfg.BaseURL
+		c.LLM.Model = cfg.Model
+		return nil
+	}); err != nil {
+		log.Printf("⚠️ 保存 LLM 配置失败: %v", err)
+	}
+}
+
+// persistTelegramLocked 将当前 Telegram 配置回写 config.json（需持有 tgBotMu）
+func (s *Server) persistTelegramLocked() {
+	if s.cfgStore == nil {
+		return
+	}
+	token := s.tgBotToken
+	enabled := s.tgBotStatus == "running"
+	if err := s.cfgStore.Update(func(c *appconfig.Config) error {
+		c.Telegram.Token = token
+		c.Telegram.Enabled = enabled
+		return nil
+	}); err != nil {
+		log.Printf("⚠️ 保存 Telegram 配置失败: %v", err)
+	}
 }
 
 // ============================================================================

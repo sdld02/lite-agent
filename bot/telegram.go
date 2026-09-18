@@ -1071,6 +1071,11 @@ func (b *Bot) saveRunnerSession(chatID int64) {
 	}
 }
 
+// Shutdown 保存所有会话（供服务模式优雅停止调用）
+func (b *Bot) Shutdown() {
+	b.saveAllSessions()
+}
+
 // saveAllSessions 保存所有会话
 func (b *Bot) saveAllSessions() {
 	b.runnersMu.RLock()

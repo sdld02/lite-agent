@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"lite-agent/agent"
+	"lite-agent/internal/netx"
 )
 
 // OpenAIProvider OpenAI API 提供者
@@ -49,6 +50,7 @@ func NewOpenAIProvider(config OpenAIConfig) *OpenAIProvider {
 		httpClient: &http.Client{
 			Timeout: 0, // 不限总时长，由 context 控制取消
 			Transport: &http.Transport{
+				Proxy:                 netx.ProxyFunc(),
 				ResponseHeaderTimeout: 30 * time.Second,
 				// 连接池 / keep-alive：Chat 与 ChatStream 复用同一 Transport
 				MaxIdleConns:          100,
@@ -134,9 +136,9 @@ type openAIResponse struct {
 type openAIStreamResponse struct {
 	Choices []struct {
 		Delta struct {
-			Role             string                `json:"role"`
-			Content          string                `json:"content"`
-			ReasoningContent string                `json:"reasoning_content"`
+			Role             string                 `json:"role"`
+			Content          string                 `json:"content"`
+			ReasoningContent string                 `json:"reasoning_content"`
 			ToolCalls        []openAIStreamToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`

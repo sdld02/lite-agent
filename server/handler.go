@@ -879,7 +879,7 @@ func (h *ConnectionHandler) handleStartTelegramBot() {
 
 // handleStopTelegramBot 处理停止 Telegram Bot
 func (h *ConnectionHandler) handleStopTelegramBot() {
-	h.server.StopTelegramBot()
+	h.server.StopTelegramBot(true)
 
 	cfg := h.server.GetTelegramConfig()
 	h.sendMessage(ServerMessage{

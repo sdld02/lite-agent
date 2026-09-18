@@ -16,6 +16,11 @@ import (
 
 	"lite-agent/agent"
 	"lite-agent/bot"
+	"lite-agent/internal/appconfig"
+	"lite-agent/internal/instance"
+	"lite-agent/internal/logging"
+	"lite-agent/internal/netx"
+	"lite-agent/internal/service"
 	"lite-agent/internal/strutil"
 	"lite-agent/llm"
 	"lite-agent/server"
@@ -120,6 +125,14 @@ func buildDefaultSystemPrompt(toolsSection, skillsPrompt string) string {
 }
 
 func main() {
+	// 子命令：service <action> ...
+	if len(os.Args) >= 2 && os.Args[1] == "service" {
+		if handleServiceSubcommand(os.Args[2:]) {
+			return
+		}
+		// run 模式：os.Args 已被重写，继续执行下方正常的服务启动流程
+	}
+
 	// 命令行参数
 	provider := flag.String("provider", "", "LLM 提供者: openai, deepseek, moonshot, zhipu, qwen, ollama")
 	apiKey := flag.String("key", "", "API Key (也可通过环境变量设置)")
@@ -130,26 +143,78 @@ func main() {
 	newSession := flag.Bool("new", false, "强制开始新会话")
 	sessionID := flag.String("session", "", "指定加载某个 session ID")
 	serverMode := flag.Bool("server", false, "以 WebSocket 服务模式启动（常驻后台）")
-	serverAddr := flag.String("addr", ":9090", "WebSocket 服务监听地址")
+	serverAddr := flag.String("addr", "", "WebSocket 服务监听地址（默认取配置或 127.0.0.1:9090）")
 	telegramMode := flag.Bool("telegram", false, "以 Telegram Bot 模式启动")
 	telegramToken := flag.String("token", "", "Telegram Bot Token（也可通过 TELEGRAM_BOT_TOKEN 环境变量设置）")
+	configPath := flag.String("config", "", "配置文件路径（默认 ~/.lite-agent/config.json）")
+	workDirFlag := flag.String("workdir", "", "工作目录（覆盖配置与当前目录）")
 	flag.Parse()
 
-	// 确定 API Key
+	// 获取用户主目录（TaskManager、Session、配置共用）
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Printf("警告: 无法获取用户主目录: %v\n", err)
+		homeDir = "."
+	}
+
+	// 加载配置（config.json）；文件不存在时使用内置默认
+	cfgStore, err := appconfig.Open(*configPath, homeDir)
+	if err != nil {
+		fmt.Printf("警告: 加载配置失败，使用默认配置: %v\n", err)
+		cfgStore, _ = appconfig.Open(appconfig.DefaultPath(homeDir), homeDir)
+	}
+	cfg := cfgStore.Get()
+
+	// 工作目录：命令行 > 配置 > 当前目录；随后 chdir 使 os.Getwd() 全局生效
+	effWorkDir := *workDirFlag
+	if effWorkDir == "" {
+		effWorkDir = cfg.Runtime.WorkDir
+	}
+	if effWorkDir != "" {
+		if err := os.Chdir(effWorkDir); err != nil {
+			fmt.Printf("警告: 切换工作目录失败 %s: %v\n", effWorkDir, err)
+		}
+	}
+
+	// 初始化统一日志（文件 + 大小轮转）；交互式模式额外输出到 stderr
+	interactiveMode := !(*serverMode || *telegramMode)
+	if closer, err := logging.Setup(cfg.Log, interactiveMode); err != nil {
+		fmt.Printf("警告: 日志初始化失败: %v\n", err)
+	} else if closer != nil {
+		defer closer.Close()
+	}
+
+	// 应用网络代理（服务模式下不继承 shell 的代理环境变量，需显式配置）
+	if err := netx.Setup(cfg.Network.Proxy); err != nil {
+		fmt.Printf("警告: 代理配置无效: %v\n", err)
+	} else if cfg.Network.Proxy != "" {
+		fmt.Printf("🌐 已启用网络代理: %s\n", cfg.Network.Proxy)
+	}
+
+	// 确定 API Key：命令行 > 环境变量 > 配置文件
 	finalAPIKey := *apiKey
 	if finalAPIKey == "" {
 		finalAPIKey = os.Getenv("OPENAI_API_KEY")
 	}
+	if finalAPIKey == "" {
+		finalAPIKey = cfg.LLM.APIKey
+	}
 
-	// 确定 Base URL 和 Model
+	// 确定生效的 provider：命令行 > 配置文件
+	effProvider := *provider
+	if effProvider == "" {
+		effProvider = cfg.LLM.Provider
+	}
+
+	// 确定 Base URL 和 Model（provider 预设为最低优先）
 	var finalBaseURL, finalModel string
-	if *provider != "" {
+	if effProvider != "" {
 		// 使用预设提供者
-		if p, ok := llmProviders[*provider]; ok {
+		if p, ok := llmProviders[effProvider]; ok {
 			finalBaseURL = p.baseURL
 			finalModel = p.model
 		} else {
-			fmt.Printf("未知的提供者: %s\n支持的提供者: ", *provider)
+			fmt.Printf("未知的提供者: %s\n支持的提供者: ", effProvider)
 			for name := range llmProviders {
 				fmt.Printf("%s ", name)
 			}
@@ -158,12 +223,12 @@ func main() {
 		}
 	}
 
-	// 命令行参数覆盖预设
-	if *baseURL != "" {
-		finalBaseURL = *baseURL
+	// 配置文件覆盖预设
+	if cfg.LLM.BaseURL != "" {
+		finalBaseURL = cfg.LLM.BaseURL
 	}
-	if *model != "" {
-		finalModel = *model
+	if cfg.LLM.Model != "" {
+		finalModel = cfg.LLM.Model
 	}
 
 	// 环境变量覆盖
@@ -174,12 +239,29 @@ func main() {
 		finalModel = envModel
 	}
 
+	// 命令行参数覆盖（最高优先级）
+	if *baseURL != "" {
+		finalBaseURL = *baseURL
+	}
+	if *model != "" {
+		finalModel = *model
+	}
+
 	// 默认值
 	if finalBaseURL == "" {
 		finalBaseURL = "https://api.openai.com/v1"
 	}
 	if finalModel == "" {
 		finalModel = "gpt-4o"
+	}
+
+	// 确定服务监听地址：命令行 > 配置文件 > 默认仅本机
+	effServerAddr := *serverAddr
+	if effServerAddr == "" {
+		effServerAddr = cfg.Server.Addr
+	}
+	if effServerAddr == "" {
+		effServerAddr = "127.0.0.1:9090"
 	}
 
 	// 验证 API Key
@@ -217,13 +299,6 @@ func main() {
 		BaseURL: finalBaseURL,
 		Model:   finalModel,
 	})
-
-	// 获取用户主目录（TaskManager 和 Session 共用）
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Printf("警告: 无法获取用户主目录: %v\n", err)
-		homeDir = "."
-	}
 
 	// 初始化任务管理器（多 Agent 支持的基础设施）
 	taskMgr := tools.InitTaskManager(homeDir)
@@ -283,6 +358,15 @@ func main() {
 
 	// === Server 模式分支 ===
 	if *serverMode {
+		// 单实例锁：避免重复启动导致端口冲突
+		lockPath := instance.DefaultPath(homeDir, cfg.Runtime.Instance)
+		lock, err := instance.Acquire(lockPath)
+		if err != nil {
+			fmt.Printf("❌ 无法启动服务: %v（锁文件: %s）\n", err, lockPath)
+			os.Exit(1)
+		}
+		defer lock.Release()
+
 		// 构建工具工厂列表（为每个连接创建独立工具实例）
 		// 基础工具来自统一规格表，再补充 skill / mcp 两个每连接特殊工厂
 		toolFactories := baseToolFactories(baseSpecs)
@@ -301,7 +385,28 @@ func main() {
 		// 注：agent 子Agent工具需要独立的 registry，在 handler 中为每个连接创建
 
 		// 创建 WebSocket 服务（注册表用于子 Agent 工具）
-		srv := server.NewServer(*serverAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories, taskMgr)
+		srv := server.NewServer(effServerAddr, store, registry, providerCfg, finalPrompt, 50, toolFactories, taskMgr)
+		// 注入配置存储：Web 面板修改的配置将回写到 config.json
+		srv.SetConfigStore(cfgStore)
+
+		// both 模式：若配置启用了 Telegram，则自动拉起
+		autoTelegram := cfg.Telegram.Enabled && cfg.Telegram.Token != ""
+		if autoTelegram {
+			srv.SetTelegramConfig(cfg.Telegram.Token)
+		}
+
+		// 服务管理器托管模式：交由 kardianos/service 管理进程生命周期
+		if serviceRunMode {
+			prog := &serverProgram{srv: srv, autoTelegram: autoTelegram}
+			svcOpt := service.Options{ConfigPath: *configPath, WorkDir: effWorkDir}
+			if err := service.Run(prog, svcOpt); err != nil {
+				fmt.Printf("服务运行失败: %v\n", err)
+				_ = lock.Release()
+				os.Exit(1)
+			}
+			_ = lock.Release()
+			return
+		}
 
 		// 注册信号处理：优雅关闭
 		sigChan := make(chan os.Signal, 1)
@@ -318,6 +423,7 @@ func main() {
 			if err := srv.Shutdown(shutdownCtx); err != nil {
 				fmt.Printf("关闭服务出错: %v\n", err)
 			}
+			_ = lock.Release()
 			os.Exit(0)
 		}()
 
@@ -328,8 +434,8 @@ func main() {
 		fmt.Println()
 		fmt.Printf("📡 API: %s\n", finalBaseURL)
 		fmt.Printf("🤖 Model: %s\n", finalModel)
-		fmt.Printf("🌐 服务地址: ws://%s/ws\n", *serverAddr)
-		fmt.Printf("❤️  健康检查: http://%s/health\n", *serverAddr)
+		fmt.Printf("🌐 服务地址: ws://%s/ws\n", effServerAddr)
+		fmt.Printf("❤️  健康检查: http://%s/health\n", effServerAddr)
 		fmt.Println()
 		printToolBanner(cat, true)
 		fmt.Println("=================================")
@@ -344,10 +450,22 @@ func main() {
 
 	// === Telegram Bot 模式分支 ===
 	if *telegramMode {
+		// 单实例锁：避免重复启动
+		lockPath := instance.DefaultPath(homeDir, cfg.Runtime.Instance)
+		lock, err := instance.Acquire(lockPath)
+		if err != nil {
+			fmt.Printf("❌ 无法启动服务: %v（锁文件: %s）\n", err, lockPath)
+			os.Exit(1)
+		}
+		defer lock.Release()
+
 		// 确定 Bot Token
 		botToken := *telegramToken
 		if botToken == "" {
 			botToken = os.Getenv("TELEGRAM_BOT_TOKEN")
+		}
+		if botToken == "" {
+			botToken = cfg.Telegram.Token
 		}
 		if botToken == "" {
 			fmt.Println("❌ 请设置 Telegram Bot Token")
@@ -384,6 +502,16 @@ func main() {
 		printToolBanner(cat, false)
 		fmt.Println("=================================")
 		fmt.Println()
+
+		if serviceRunMode {
+			prog := &botProgram{bot: botInstance}
+			svcOpt := service.Options{ConfigPath: *configPath, WorkDir: effWorkDir}
+			if err := service.Run(prog, svcOpt); err != nil {
+				fmt.Printf("服务运行失败: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 
 		if err := botInstance.Start(); err != nil {
 			fmt.Printf("❌ Telegram Bot 运行失败: %v\n", err)

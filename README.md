@@ -69,7 +69,16 @@ lite-agent/
 │   └── websearch.go                # DuckDuckGo 网页搜索
 ├── docs/
 │   └── websocket-server-design.md  # WebSocket 服务设计文档
-├── main.go                         # 程序入口（CLI/WebSocket/Telegram 三种模式）
+├── internal/
+│   ├── appconfig/                  # 持久化配置（~/.lite-agent/config.json）
+│   ├── instance/                   # 跨平台单实例锁（flock / LockFileEx）
+│   ├── logging/                    # 日志（文件 + 大小轮转）
+│   ├── netx/                       # 统一网络代理（服务模式下生效）
+│   ├── service/                    # 跨平台服务管理（launchd/systemd/Windows）&
+│   └── strutil/                    # 字符串工具
+├── main.go                         # 程序入口（CLI/WebSocket/Telegram + service 子命令）
+├── service_cmd.go                  # `service` 子命令（install/uninstall/start/...）
+├── service_program.go              # 服务生命周期适配（server/bot program）
 ├── go.mod / go.sum
 └── README.md
 ```
@@ -120,6 +129,65 @@ go run main.go -provider=deepseek -key=your-api-key -stream=false
 | **CLI 交互式** | `go run main.go -provider=deepseek -key=xxx` | 终端交互式对话（默认） |
 | **WebSocket 服务** | `go run main.go -server -addr=:9090` | Web 控制面板 + WebSocket API |
 | **Telegram Bot** | `go run main.go -telegram -token=xxx` | 通过 Telegram 聊天使用 Agent |
+
+### 部署为开机自启服务
+
+lite-agent 内置跨平台服务管理，可将自身安装为开机自启服务（macOS launchd / Linux systemd / Windows SCM 或计划任务），并支持选择运行级别。
+
+#### 运行级别
+
+| 级别 | 说明 | macOS | Linux | Windows |
+|------|------|-------|-------|---------|
+| `user` | 用户登录后自动启动（默认，免特权） | LaunchAgent | systemd --user | 计划任务 |
+| `system` | 开机即启动 | LaunchDaemon（需 sudo） | systemd 系统服务（需 sudo） | SCM 服务（需管理员） |
+
+#### 命令
+
+```bash
+# 安装为开机自启服务（用户级，登录后启动）
+./bin/lite-agent service install --level=user
+
+# 安装为系统级服务（开机即启，需 sudo）
+sudo ./bin/lite-agent service install --level=system
+
+# 查看/控制服务
+./bin/lite-agent service status
+./bin/lite-agent service start
+./bin/lite-agent service stop
+./bin/lite-agent service restart
+
+# 显示底层服务管理器（launchd/systemd/windows）
+./bin/lite-agent service platform
+
+# 卸载服务
+./bin/lite-agent service uninstall
+```
+
+也提供了 Makefile 快捷目标：`make service-install`、`make service-install-system`、`make service-uninstall`、`make service-status`。
+
+#### 配置文件
+
+服务读取 `~/.lite-agent/config.json`（首次运行自动生成），示例：
+
+```json
+{
+  "version": 1,
+  "runtime": { "mode": "both", "workDir": "/path/to/your/project", "instance": "default" },
+  "server":  { "enabled": true, "addr": "127.0.0.1:9090" },
+  "network": { "proxy": "" },
+  "llm":     { "provider": "deepseek", "apiKey": "sk-xxx", "baseUrl": "https://api.deepseek.com/v1", "model": "deepseek-chat" },
+  "telegram":{ "enabled": false, "token": "" },
+  "log":     { "level": "info", "file": "~/.lite-agent/logs/lite-agent.log", "maxSizeMB": 10, "maxBackups": 7 }
+}
+```
+
+- `runtime.mode`：`server`（仅 WebSocket）/ `telegram`（仅 Bot）/ `both`（单进程同时托管）
+- 配置优先级：命令行参数 > 环境变量 > config.json > 内置默认
+- Web 控制面板中修改的 LLM / Telegram 配置会自动回写到 config.json
+- `server.addr` 默认仅本机 `127.0.0.1:9090`；如需远程访问请走 SSH 隧道或反向代理
+- `network.proxy`：HTTP/HTTPS 代理（如 `http://127.0.0.1:1088`）。**服务化后进程不继承 shell 的代理环境变量**，访问 Telegram 或境外 LLM 时需在此显式配置（同时作用于 Telegram 与大模型请求）
+- 日志按大小自动轮转，服务模式下写入 `~/.lite-agent/logs/`
+- 通过 `service install` 安装前，请先在 config.json 配置好 `llm.apiKey`，否则服务会因缺少 Key 而反复重启
 
 ### CLI 交互命令
 
@@ -433,6 +501,7 @@ Shell 默认白名单包含 40+ 个常用命令（`ls`, `git`, `go`, `npm`, `doc
 - [x] WebSocket 服务 + Web 控制面板
 - [x] Telegram Bot 集成
 - [x] 用户交互式提问（`ask_user_question`）
+- [x] 跨平台开机自启（launchd / systemd / Windows SCM·计划任务）
 - [ ] 向量数据库支持（RAG）
 - [ ] 多 Agent 协作（多主 Agent）
 - [ ] 代码执行沙箱

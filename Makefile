@@ -9,7 +9,7 @@
 APP_NAME    := lite-agent
 MODULE      := lite-agent
 BUILD_DIR   := bin
-MAIN_FILE   := main.go
+MAIN_FILE   := .
 
 # 版本信息（可通过命令行传入）
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -60,6 +60,22 @@ build-all:
 	@echo "$(GREEN)✅ 全部构建完成！$(RESET)"
 	@echo ""
 	@ls -lh $(BUILD_DIR)/
+
+## 安装为开机自启服务（用户级，免特权）
+service-install: build
+	@./$(BUILD_DIR)/$(APP_NAME) service install --level=user
+
+## 安装为系统级服务（开机即启，需 sudo）
+service-install-system: build
+	@sudo ./$(BUILD_DIR)/$(APP_NAME) service install --level=system
+
+## 卸载服务
+service-uninstall:
+	@./$(BUILD_DIR)/$(APP_NAME) service uninstall
+
+## 查看服务状态
+service-status:
+	@./$(BUILD_DIR)/$(APP_NAME) service status
 
 ## 清理构建产物
 clean:

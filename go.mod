@@ -7,8 +7,10 @@ require (
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gorilla/websocket v1.5.3
+	github.com/kardianos/service v1.3.0
 	github.com/sergi/go-diff v1.4.0
 	golang.org/x/sys v0.38.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
