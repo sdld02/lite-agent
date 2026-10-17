@@ -34,6 +34,8 @@
   --radius: 12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
+  /* 消息气泡与提问卡片共用的宽度上限，避免两者左右边界不一致 */
+  --msg-max-width: 78%;
   --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
@@ -204,10 +206,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   background:linear-gradient(180deg, var(--bg) 0%, var(--bg-subtle) 100%);
 }
 
-.msg { display:flex; flex-direction:column; max-width:78%; animation:msgIn 0.25s ease; }
+.msg { display:flex; flex-direction:column; max-width:var(--msg-max-width); animation:msgIn 0.25s ease; }
 @keyframes msgIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
 .msg.user { align-self:flex-end; }
-.msg.assistant { align-self:flex-start; }
+/* 助手消息统一占满消息列宽，使下方提问卡片的左右边界与其对齐 */
+.msg.assistant { align-self:flex-start; width:100%; }
 .msg .bubble {
   padding:10px 14px; border-radius:var(--radius); line-height:1.55;
   font-size:13px; word-break:break-word;
@@ -475,7 +478,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
 @media (max-width:768px) {
   #sidebar { width:240px; min-width:240px; }
-  .msg { max-width:92%; }
+  :root { --msg-max-width:92%; }
 }
 
 /* ====== TELEGRAM BOT ====== */
@@ -614,47 +617,63 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 }
 .btn-add-env:hover { border-color:var(--accent); color:var(--accent); }
 
-/* ====== ASK USER QUESTION ====== */
-.question-overlay {
-  position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:200;
-  display:flex; align-items:center; justify-content:center;
-  animation:fadeIn 0.2s ease; backdrop-filter:blur(8px);
+/* ====== ASK USER QUESTION（内联卡片） ====== */
+.msg.question-inline {
+  width:100%; max-width:var(--msg-max-width); align-self:flex-start;
 }
-.question-modal {
-  background:var(--surface); border:1px solid var(--border);
-  border-radius:20px; padding:32px 36px; width:580px;
-  max-width:92vw; max-height:85vh; overflow-y:auto;
-  box-shadow:0 24px 80px rgba(0,0,0,0.6);
+.question-card {
+  background:var(--surface);
+  border:1px solid rgba(123,159,255,0.35);
+  border-left:3px solid var(--accent);
+  /* 左内边距扣除 3px 左侧强调边框，使正文与上方气泡文字左边缘对齐 */
+  border-radius:var(--radius); padding:14px 14px 14px 12px;
+  font-size:13px; line-height:1.55;
+  box-shadow:0 6px 28px rgba(0,0,0,0.28);
 }
-.question-modal h2 {
-  font-size:20px; font-weight:700; margin-bottom:6px;
-  display:flex; align-items:center; gap:10px;
-  letter-spacing:-0.3px;
+.question-card h2 {
+  font-size:13px; font-weight:700; margin-bottom:4px;
+  display:flex; align-items:center; gap:8px;
+  letter-spacing:-0.2px;
 }
-.question-modal h2 .q-icon { font-size:24px; }
-.question-modal .q-subtitle { font-size:12px; color:var(--text-muted); margin-bottom:10px; }
-.question-modal .q-progress { display:flex; gap:6px; margin-bottom:22px; flex-wrap:wrap; }
-.question-modal .q-progress-dot {
+.question-card h2 .q-icon { font-size:15px; }
+.question-card .q-subtitle {
+  font-size:12px; color:var(--text-muted); margin-bottom:12px;
+  display:flex; align-items:center; gap:7px;
+}
+.question-card .q-waiting-dot {
+  width:7px; height:7px; border-radius:50%; background:var(--accent);
+  flex-shrink:0; animation:qPulse 1.4s ease-in-out infinite;
+}
+@keyframes qPulse {
+  0%,100% { opacity:0.3; transform:scale(0.8); }
+  50% { opacity:1; transform:scale(1.15); box-shadow:0 0 8px var(--accent-dim); }
+}
+.question-card .q-progress { display:flex; gap:6px; margin-bottom:16px; flex-wrap:wrap; }
+.question-card .q-progress-dot {
   width:10px; height:10px; border-radius:50%;
   background:rgba(255,255,255,0.06); border:1px solid var(--border);
   transition:var(--transition); cursor:pointer;
 }
-.question-modal .q-progress-dot.active { background:var(--accent); border-color:var(--accent); transform:scale(1.3); box-shadow:0 0 8px var(--accent-dim); }
-.question-modal .q-progress-dot.answered { background:var(--success); border-color:var(--success); }
+.question-card .q-progress-dot.active { background:var(--accent); border-color:var(--accent); transform:scale(1.3); box-shadow:0 0 8px var(--accent-dim); }
+.question-card .q-progress-dot.answered { background:var(--success); border-color:var(--success); }
+@media (max-width:640px) {
+  .question-card { padding:12px 14px 12px 12px; }
+  .q-navigation button { padding:8px 14px; }
+}
 
-.q-block { margin-bottom:24px; animation:msgIn 0.25s ease; }
+.q-block { margin-bottom:16px; animation:msgIn 0.25s ease; }
 .q-block .q-header {
   display:inline-block; padding:4px 12px; border-radius:12px;
   background:var(--accent-dim); color:var(--accent);
   font-size:11px; font-weight:600; text-transform:uppercase;
   letter-spacing:0.5px; margin-bottom:10px;
 }
-.q-block .q-text { font-size:15px; font-weight:500; margin-bottom:16px; line-height:1.55; color:var(--text); }
+.q-block .q-text { font-size:13px; font-weight:500; margin-bottom:14px; line-height:1.55; color:var(--text); }
 .q-block .q-type-hint { font-size:11px; color:var(--text-muted); margin-bottom:10px; }
 
 .option-card {
   display:flex; align-items:flex-start; gap:12px;
-  padding:14px 16px; margin-bottom:8px; border-radius:var(--radius);
+  padding:10px 14px; margin-bottom:6px; border-radius:var(--radius-xs);
   border:1px solid var(--border); cursor:pointer;
   transition:var(--transition); background:var(--bg);
 }
@@ -680,7 +699,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 }
 .option-card.selected .opt-check { border-color:var(--accent); background:var(--accent); }
 .option-card .opt-body { flex:1; min-width:0; }
-.option-card .opt-label { font-weight:600; font-size:14px; color:var(--text); }
+.option-card .opt-label { font-weight:600; font-size:13px; color:var(--text); }
 .option-card .opt-desc { font-size:12px; color:var(--text-secondary); margin-top:3px; line-height:1.4; }
 
 .option-card.other-option { border-style:dashed; background:transparent; }
@@ -695,20 +714,20 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 .custom-input-wrap { margin-top:8px; display:none; width:100%; }
 .custom-input-wrap.visible { display:block; }
 .custom-input-wrap input {
-  width:100%; padding:10px 14px; border-radius:var(--radius-sm);
+  width:100%; padding:8px 12px; border-radius:var(--radius-xs);
   border:1px solid var(--border); background:var(--bg);
-  color:var(--text); font-size:14px; outline:none;
+  color:var(--text); font-size:13px; outline:none;
   transition:var(--transition);
 }
 .custom-input-wrap input:focus { border-color:var(--warning); box-shadow:0 0 0 3px var(--warning-dim); }
 
 .q-navigation {
   display:flex; gap:10px; justify-content:space-between;
-  margin-top:22px; padding-top:18px; border-top:1px solid var(--border);
+  margin-top:16px; padding-top:14px; border-top:1px solid var(--border);
 }
 .q-navigation button {
-  padding:11px 26px; border-radius:var(--radius-sm);
-  font-size:14px; font-weight:600; cursor:pointer;
+  padding:8px 16px; border-radius:var(--radius-xs);
+  font-size:13px; font-weight:600; cursor:pointer;
   transition:var(--transition); border:none;
 }
 .q-navigation .btn-back { background:var(--surface-hover); color:var(--text-secondary); }
@@ -1176,6 +1195,15 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       messagesPinned = true;
       container.scrollTop = container.scrollHeight;
     }
+    // 待回答问题：作为流内卡片追加在消息末尾（纯展示，不写入 s.messages）
+    var pendingQ = getActiveQuestion();
+    if (pendingQ) {
+      var welcomeEl = container.querySelector('.welcome');
+      if (welcomeEl && welcomeEl.parentNode) welcomeEl.parentNode.removeChild(welcomeEl);
+      container.insertAdjacentHTML('beforeend', buildQuestionCardHtml(pendingQ));
+      if (messagesPinned) container.scrollTop = container.scrollHeight;
+    }
+    updateSendButton();
   }
 
   function convertHistoryMessages(rawMessages) {
@@ -1437,7 +1465,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
         break;
       case 'ask_question':
         if (targetSession && msg.questions) {
-          showQuestionModal(targetSession.id, msg.questions);
+          showQuestion(targetSession.id, msg.questions);
         }
         break;
       case 'done':
@@ -1912,6 +1940,9 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var s = getSessionById(sessionId);
     if (!s) return;
 
+    // 流结束（取消/超时/出错）时清理仍未回答的问题，避免卡片永久悬挂
+    if (questionStates[sessionId]) clearQuestion(sessionId);
+
     var lastMsg = s.messages[s.messages.length - 1];
     if (lastMsg && lastMsg.role === 'assistant') {
       lastMsg._done = true;
@@ -1984,39 +2015,47 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       sendBtn.style.display = 'block';
       stopBtn.style.display = 'none';
     }
-    sendBtn.disabled = streaming;
+    var pending = !!getActiveQuestion();
+    sendBtn.disabled = streaming || pending;
+    var inputEl = document.getElementById('input');
+    if (inputEl) {
+      inputEl.placeholder = pending
+        ? '请先回答上方的问题…'
+        : '输入消息，Enter 发送，Shift+Enter 换行...';
+    }
   }
 
-  // ========== QUESTION MODAL ==========
-  var questionState = null;
+  // ========== ASK USER QUESTION（内联卡片，仅展示，不写入消息数据） ==========
+  // 待回答问题按会话保存在内存中，不进入 session.messages
+  var questionStates = {};
 
-  function showQuestionModal(sessionId, questions) {
-    questionState = {
+  function getActiveQuestion() {
+    if (!questionStates) return null;
+    var s = getActiveSession();
+    if (!s) return null;
+    return questionStates[s.id] || null;
+  }
+
+  function showQuestion(sessionId, questions) {
+    questionStates[sessionId] = {
       sessionId: sessionId,
       questions: questions,
       currentIdx: 0,
       answers: {},
       customText: {}
     };
-
-    var overlay = document.getElementById('question-overlay');
-    if (!overlay) {
-      overlay = document.createElement('div');
-      overlay.id = 'question-overlay';
-      overlay.className = 'question-overlay';
-      document.body.appendChild(overlay);
-    }
-    renderQuestion(overlay);
+    if (isSessionVisible(sessionId)) mountQuestionCard(sessionId);
+    updateSendButton();
   }
 
-  function closeQuestionModal() {
-    var overlay = document.getElementById('question-overlay');
-    if (overlay) overlay.remove();
-    questionState = null;
+  function clearQuestion(sessionId) {
+    delete questionStates[sessionId];
+    var el = document.getElementById('q-inline');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    updateSendButton();
   }
 
-  function renderQuestion(overlay) {
-    var qs = questionState;
+  function buildQuestionCardHtml(qs) {
     var q = qs.questions[qs.currentIdx];
     var isLast = qs.currentIdx >= qs.questions.length - 1;
 
@@ -2084,10 +2123,10 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       navHtml += '<button class="btn-next" onclick="goNextOrSubmit()">下一题</button>';
     }
 
-    overlay.innerHTML =
-      '<div class="question-modal">' +
+    return '<div class="msg question-inline" id="q-inline">' +
+      '<div class="question-card">' +
       '<h2><span class="q-icon">📋</span> 需要你的选择</h2>' +
-      '<div class="q-subtitle">Agent 正在等待你的回答...</div>' +
+      '<div class="q-subtitle"><span class="q-waiting-dot"></span>Agent 正在等待你的回答，可先滚动查看上方上下文</div>' +
       (qs.questions.length > 1 ? '<div class="q-progress">' + progressHtml + '</div>' : '') +
       '<div class="q-block">' +
       '<span class="q-header">' + escHtml(q.header) + '</span>' +
@@ -2096,18 +2135,44 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       optionsHtml +
       '</div>' +
       '<div class="q-navigation">' + navHtml + '</div>' +
-      '</div>';
+      '</div></div>';
+  }
 
-    if (isOtherSelected) {
+  // 原地替换卡片（保持消息流位置，不影响流式输出）
+  function renderQuestionCard(sessionId) {
+    var qs = questionStates[sessionId];
+    if (!qs) return;
+    var holder = document.createElement('div');
+    holder.innerHTML = buildQuestionCardHtml(qs);
+    var node = holder.firstChild;
+    var old = document.getElementById('q-inline');
+    if (old && old.parentNode) {
+      old.parentNode.replaceChild(node, old);
+    } else {
+      var container = document.getElementById('messages');
+      if (container) container.appendChild(node);
+    }
+    var q = qs.questions[qs.currentIdx];
+    var sel = qs.answers[q.question] || '';
+    if (sel === '__other__' || sel.indexOf('__other__') >= 0) {
       setTimeout(function() {
-        var input = overlay.querySelector('.custom-input-wrap.visible input');
+        var input = node.querySelector('.custom-input-wrap.visible input');
         if (input) input.focus();
-      }, 100);
+      }, 60);
     }
   }
 
+  function mountQuestionCard(sessionId) {
+    var container = document.getElementById('messages');
+    if (!container) return;
+    var welcome = container.querySelector('.welcome');
+    if (welcome) welcome.parentNode.removeChild(welcome);
+    renderQuestionCard(sessionId);
+    if (messagesPinned) scrollToBottom();
+  }
+
   window.selectOption = function(idx, cardEl) {
-    var qs = questionState;
+    var qs = getActiveQuestion();
     if (!qs) return;
     var q = qs.questions[qs.currentIdx];
     var opt = q.options[idx];
@@ -2130,11 +2195,11 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
 
     delete qs.customText[q.question];
 
-    renderQuestion(document.getElementById('question-overlay'));
+    renderQuestionCard(qs.sessionId);
   };
 
   window.selectOtherOption = function(cardEl) {
-    var qs = questionState;
+    var qs = getActiveQuestion();
     if (!qs) return;
     var q = qs.questions[qs.currentIdx];
 
@@ -2157,34 +2222,37 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
       }
     }
 
-    renderQuestion(document.getElementById('question-overlay'));
+    renderQuestionCard(qs.sessionId);
   };
 
   window.updateCustomText = function(text) {
-    var qs = questionState;
+    var qs = getActiveQuestion();
     if (!qs) return;
     var q = qs.questions[qs.currentIdx];
     qs.customText[q.question] = text;
   };
 
   window.navigateToQuestion = function(idx) {
-    if (!questionState) return;
-    questionState.currentIdx = idx;
-    renderQuestion(document.getElementById('question-overlay'));
+    var qs = getActiveQuestion();
+    if (!qs) return;
+    qs.currentIdx = idx;
+    renderQuestionCard(qs.sessionId);
   };
 
   window.navigateQuestion = function(delta) {
-    if (!questionState) return;
-    var newIdx = questionState.currentIdx + delta;
-    if (newIdx >= 0 && newIdx < questionState.questions.length) {
-      questionState.currentIdx = newIdx;
-      renderQuestion(document.getElementById('question-overlay'));
+    var qs = getActiveQuestion();
+    if (!qs) return;
+    var newIdx = qs.currentIdx + delta;
+    if (newIdx >= 0 && newIdx < qs.questions.length) {
+      qs.currentIdx = newIdx;
+      renderQuestionCard(qs.sessionId);
     }
   };
 
   window.goNextOrSubmit = function() {
-    if (!questionState) return;
-    if (questionState.currentIdx < questionState.questions.length - 1) {
+    var qs = getActiveQuestion();
+    if (!qs) return;
+    if (qs.currentIdx < qs.questions.length - 1) {
       navigateQuestion(1);
     } else {
       submitQuestionAnswers();
@@ -2192,7 +2260,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
   };
 
   window.submitQuestionAnswers = function() {
-    var qs = questionState;
+    var qs = getActiveQuestion();
     if (!qs) return;
 
     var finalAnswers = {};
@@ -2229,7 +2297,7 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     var serverSid = (s && s.serverSessionId) ? s.serverSessionId : '';
     sendWS({ type: 'answer_question', session_id: serverSid, answers: finalAnswers });
 
-    closeQuestionModal();
+    clearQuestion(qs.sessionId);
   }
 
   // ========== USER INPUT ==========
@@ -2260,6 +2328,13 @@ html,body { height:100%; font-family:var(--font-sans); background:var(--bg); col
     if (!text) return;
 
     if (isActiveStreaming()) return;
+
+    // 有未回答的问题时，先把用户带回问题卡片，避免打断阻塞中的 Agent
+    if (getActiveQuestion()) {
+      var qCard = document.getElementById('q-inline');
+      if (qCard) qCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
 
     input.value = '';
     input.style.height = 'auto';
